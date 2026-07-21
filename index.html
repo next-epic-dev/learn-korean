@@ -434,6 +434,36 @@
 <script>
 const LINES = [{"start": 0.0, "who": "JIHO", "ko": "…수아야?", "en": "…Sua?", "note": "Adding <b>-야 (-ya)</b> after a name is how Koreans call someone they're close to. You've heard it a thousand times — now you know why it stings here."}, {"start": 3.8, "who": "SUA", "ko": "…오빠. 진짜 오랜만이다.", "en": "…Oppa. It's really been so long.", "note": "<b>오랜만이다</b> — 'it's been a while.' The #1 reunion line in every K-drama. <b>오빠 (oppa)</b> = what women call an older man they're close to. Often a boyfriend. Often an ex."}, {"start": 7.92, "who": "JIHO", "ko": "잘… 지냈어?", "en": "Have you… been well?", "note": "<b>잘 지냈어?</b> — the standard greeting after time apart. The hesitation between the words is doing all the acting."}, {"start": 10.44, "who": "SUA", "ko": "응. 오빠는?", "en": "Yeah. And you?", "note": "<b>응</b> = the casual 'yes' you only use with people you're close to. Adding <b>-는?</b> bounces the question back: 'and you?'"}, {"start": 12.32, "who": "JIHO", "ko": "아니. 하나도 못 지냈어.", "en": "No. Not well at all.", "note": "<b>하나도</b> + negative = 'not even one bit.' A confession disguised as an answer. This is the line the whole scene was built for."}, {"start": 16.68, "who": "SUA", "ko": "…왜 이제 왔어.", "en": "…Why did you only come now.", "note": "The classic K-drama line: blame on the surface, longing underneath. <b>이제</b> = 'only now.' If you felt that — you're our people."}];
 const SUPABASE_URL = "https://pjvjweurelmosugwptdl.supabase.co", SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBqdmp3ZXVyZWxtb3N1Z3dwdGRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQzNDQxODMsImV4cCI6MjA3OTkyMDE4M30.561J0c1dA0FeQ7Fc568xeVVPDvdUW_bW1BNb78gzIKk";
+
+/* --- self-hosted behaviour tracking (writes to dk_events) --- */
+const DK_SID = (function(){ try { let s = localStorage.getItem('dk_sid');
+  if(!s){ s = Date.now().toString(36)+Math.random().toString(36).slice(2,8); localStorage.setItem('dk_sid', s); }
+  return s; } catch(e){ return 'nostore'; } })();
+const DK_UTM = (function(){ const p = new URLSearchParams(location.search); return {
+  utm_source:p.get('utm_source'), utm_medium:p.get('utm_medium'),
+  utm_campaign:p.get('utm_campaign'), utm_content:p.get('utm_content'),
+  referrer:(document.referrer||null) }; })();
+function track(event, meta){ try {
+  fetch(SUPABASE_URL + '/rest/v1/dk_events', { method:'POST', keepalive:true,
+    headers:{ 'Content-Type':'application/json', apikey:SUPABASE_KEY,
+      Authorization:'Bearer '+SUPABASE_KEY, Prefer:'return=minimal' },
+    body: JSON.stringify(Object.assign({ session_id:DK_SID, event:event,
+      path:location.pathname, meta:(meta||null) }, DK_UTM)) });
+} catch(e){} }
+track('page_view');
+(function(){ let mx = 0; addEventListener('scroll', function(){
+  const h = document.documentElement.scrollHeight - innerHeight;
+  const pct = h > 0 ? Math.round(scrollY / h * 100) : 100;
+  [25,50,75,90].forEach(function(m){ if(pct >= m && mx < m){ mx = m; track('scroll_'+m); } });
+}, { passive:true }); })();
+document.addEventListener('click', function(e){
+  const a = e.target.closest && e.target.closest('a[href^="#"]'); if(!a) return;
+  const href = a.getAttribute('href') || '';
+  const label = (a.textContent||'').trim().slice(0,40);
+  if(href === '#waitlist') track('cta_click', {to:'waitlist', label:label});
+  else if(href === '#demo') track('cta_click', {to:'demo', label:label});
+});
+
 const au = document.getElementById('au');
 let cur = -1, noteOpen = false;
 const sc = document.getElementById('script');
@@ -445,7 +475,8 @@ LINES.forEach((l, i) => {
   sc.appendChild(r);
 });
 function startPlay(){ document.getElementById('pb').style.display='none';
-  document.getElementById('subs').style.visibility='visible'; au.play(); }
+  document.getElementById('subs').style.visibility='visible'; au.play();
+  if(!window.__dkPlayed){ window.__dkPlayed = 1; track('demo_play'); } }
 function replay(){ au.currentTime = 0; startPlay(); }
 function toggleNote(){ noteOpen = !noteOpen; renderNote(); }
 function renderNote(){ const n = document.getElementById('note');
@@ -474,6 +505,9 @@ if (!matchMedia('(prefers-reduced-motion: reduce)').matches && 'IntersectionObse
   els.forEach(el => { el.classList.add('fx'); io.observe(el); });
 }
 
+(function(){ const f = document.getElementById('wl-email');
+  if(f) f.addEventListener('focus', function(){ track('email_focus'); }, { once:true }); })();
+
 async function submitWaitlist(e){
   e.preventDefault();
   const email = document.getElementById('wl-email').value.trim();
@@ -484,14 +518,14 @@ async function submitWaitlist(e){
       method:'POST',
       headers:{ 'Content-Type':'application/json', apikey:SUPABASE_KEY,
         Authorization:'Bearer ' + SUPABASE_KEY, Prefer:'return=minimal' },
-      body: JSON.stringify({ email, source:'landing' })
+      body: JSON.stringify(Object.assign({ email, source:'landing' }, DK_UTM))
     });
-    if (res.status === 409) { msg.textContent = "You're already on the list — see you at the premiere."; msg.className='form-msg ok'; }
+    if (res.status === 409) { msg.textContent = "You're already on the list — see you at the premiere."; msg.className='form-msg ok'; track('signup_duplicate'); }
     else if (!res.ok) throw new Error(await res.text());
     else { msg.textContent = "Your seat is reserved. Watch your inbox for episode one."; msg.className='form-msg ok';
-      document.getElementById('wl-email').value=''; }
+      document.getElementById('wl-email').value=''; track('signup_success'); }
   } catch(err){
-    msg.textContent = 'Something went wrong — please try again.'; msg.className='form-msg err';
+    msg.textContent = 'Something went wrong — please try again.'; msg.className='form-msg err'; track('signup_error');
   } finally { btn.disabled=false; btn.textContent='Reserve my seat'; }
   return false;
 }
