@@ -57,6 +57,8 @@
   .logline .ko-inline { font-family:'Noto Serif KR','Fraunces',serif; color:var(--amber-hi); }
   .hero-sub { margin-top:18px; font-size:clamp(15px,1.8vw,17px); color:var(--sub); max-width:52ch; }
   .hero-ctas { margin-top:36px; display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+  .hero-wl { max-width:460px; margin-top:22px; }
+  .hero-wl input[type=email] { background:rgba(20,16,16,.78); }
   .btn { display:inline-block; padding:15px 28px; border-radius:8px; font-size:15.5px; font-weight:600;
     text-decoration:none; letter-spacing:.01em; }
   .btn-primary { background:var(--amber); color:var(--ink); }
@@ -263,6 +265,12 @@
       <a class="btn btn-primary" href="#demo">▶ Understand a scene — in 20 seconds</a>
       <a class="btn btn-ghost" href="#waitlist">Reserve a founding seat</a>
     </div>
+    <form class="hero-wl" id="wl-form-hero" onsubmit="return submitWaitlist(event,'hero')">
+      <input type="email" id="wl-email-hero" placeholder="your@email.com" required>
+      <button type="submit" id="wl-btn-hero">Reserve my seat</button>
+    </form>
+    <div class="form-msg" id="wl-msg-hero"></div>
+    <p class="tiny">Free to join · no card · first episode this July</p>
   </div>
 </header>
 
@@ -451,11 +459,21 @@ function track(event, meta){ try {
       path:location.pathname, meta:(meta||null) }, DK_UTM)) });
 } catch(e){} }
 track('page_view');
-(function(){ let mx = 0; addEventListener('scroll', function(){
+window.__dkMx = 0;
+(function(){ addEventListener('scroll', function(){
   const h = document.documentElement.scrollHeight - innerHeight;
   const pct = h > 0 ? Math.round(scrollY / h * 100) : 100;
-  [25,50,75,90].forEach(function(m){ if(pct >= m && mx < m){ mx = m; track('scroll_'+m); } });
+  [25,50,75,90].forEach(function(m){ if(pct >= m && window.__dkMx < m){ window.__dkMx = m; track('scroll_'+m); } });
 }, { passive:true }); })();
+addEventListener('load', function(){ try {
+  const nav = performance.getEntriesByType('navigation')[0]; if(!nav) return;
+  track('perf', { ttfb:Math.round(nav.responseStart), dcl:Math.round(nav.domContentLoadedEventEnd), load:Math.round(nav.loadEventEnd) });
+} catch(e){} });
+(function(){ const t0 = Date.now(); let sent = 0;
+  function bye(){ if(sent) return; sent = 1;
+    track('leave', { sec:Math.round((Date.now()-t0)/1000), maxscroll:window.__dkMx }); }
+  addEventListener('visibilitychange', function(){ if(document.visibilityState === 'hidden') bye(); });
+  addEventListener('pagehide', bye); })();
 document.addEventListener('click', function(e){
   const a = e.target.closest && e.target.closest('a[href^="#"]'); if(!a) return;
   const href = a.getAttribute('href') || '';
@@ -505,13 +523,15 @@ if (!matchMedia('(prefers-reduced-motion: reduce)').matches && 'IntersectionObse
   els.forEach(el => { el.classList.add('fx'); io.observe(el); });
 }
 
-(function(){ const f = document.getElementById('wl-email');
-  if(f) f.addEventListener('focus', function(){ track('email_focus'); }, { once:true }); })();
+(function(){ [['wl-email','bottom'],['wl-email-hero','hero']].forEach(function(p){
+  const f = document.getElementById(p[0]);
+  if(f) f.addEventListener('focus', function(){ track('email_focus', {loc:p[1]}); }, { once:true }); }); })();
 
-async function submitWaitlist(e){
+async function submitWaitlist(e, loc){
   e.preventDefault();
-  const email = document.getElementById('wl-email').value.trim();
-  const msg = document.getElementById('wl-msg'), btn = document.getElementById('wl-btn');
+  const sfx = loc === 'hero' ? '-hero' : '';
+  const email = document.getElementById('wl-email'+sfx).value.trim();
+  const msg = document.getElementById('wl-msg'+sfx), btn = document.getElementById('wl-btn'+sfx);
   btn.disabled = true; btn.textContent = 'Reserving…'; msg.className = 'form-msg';
   try {
     const res = await fetch(SUPABASE_URL + '/rest/v1/dk_waitlist', {
@@ -520,12 +540,12 @@ async function submitWaitlist(e){
         Authorization:'Bearer ' + SUPABASE_KEY, Prefer:'return=minimal' },
       body: JSON.stringify(Object.assign({ email, source:'landing' }, DK_UTM))
     });
-    if (res.status === 409) { msg.textContent = "You're already on the list — see you at the premiere."; msg.className='form-msg ok'; track('signup_duplicate'); }
+    if (res.status === 409) { msg.textContent = "You're already on the list — see you at the premiere."; msg.className='form-msg ok'; track('signup_duplicate', {loc:loc||'bottom'}); }
     else if (!res.ok) throw new Error(await res.text());
     else { msg.textContent = "Your seat is reserved. Watch your inbox for episode one."; msg.className='form-msg ok';
-      document.getElementById('wl-email').value=''; track('signup_success'); }
+      document.getElementById('wl-email'+sfx).value=''; track('signup_success', {loc:loc||'bottom'}); }
   } catch(err){
-    msg.textContent = 'Something went wrong — please try again.'; msg.className='form-msg err'; track('signup_error');
+    msg.textContent = 'Something went wrong — please try again.'; msg.className='form-msg err'; track('signup_error', {loc:loc||'bottom'});
   } finally { btn.disabled=false; btn.textContent='Reserve my seat'; }
   return false;
 }
