@@ -261,12 +261,7 @@
       <a class="btn btn-primary" href="#demo">▶ Understand a scene — in 20 seconds</a>
       <a class="btn btn-ghost" href="#waitlist">Reserve a founding seat</a>
     </div>
-    <form class="hero-wl" id="wl-form-hero" onsubmit="return submitWaitlist(event,'hero')">
-      <input type="email" id="wl-email-hero" placeholder="your@email.com" required>
-      <button type="submit" id="wl-btn-hero">Reserve my seat</button>
-    </form>
-    <div class="form-msg" id="wl-msg-hero"></div>
-    <p class="tiny">Free to join · no card · first episode this July</p>
+    <p class="tiny">Founding pre-order · fully refundable until Episode One · first season this year</p>
   </div>
 </header>
 
@@ -412,8 +407,8 @@
   <span class="kicker">EARLY ACCESS &middot; EPISODE ONE THIS JULY</span>
   <h2>Reserve a <em>founding seat</em>.</h2>
   <p class="seat-promise">Two minutes a night. One season. Then you watch the finale without reading.</p>
-  <p class="price-line"><b>$49</b> / year — founding price, yours forever</p>
-  <p class="price-note">First 100 seats only &middot; the price goes to $89/year after that</p>
+  <p class="price-line"><s id="anchor-price">$149</s> &nbsp;<b id="founding-price">$49</b> — founding member, lifetime access</p>
+  <p class="price-note">Founding price locked for every future season &middot; fully refundable until Episode One launches</p>
   <ul class="includes">
     <li><b>Season one of <i>Love, Again</i></b> — ten episodes, thirty scenes, written for your level</li>
     <li><b>Every line opens when you tap it</b> — meaning, nuance, and where you've heard it before</li>
@@ -421,12 +416,16 @@
     <li><b>A three-question review after each scene</b> — that's all the testing, ever</li>
     <li><b>Every future season</b> — new stories and genres, locked at your founding price</li>
   </ul>
-  <form id="wl-form" onsubmit="return submitWaitlist(event)">
-    <input type="email" id="wl-email" placeholder="your@email.com" required>
-    <button type="submit" id="wl-btn">Reserve my seat</button>
-  </form>
-  <div class="form-msg" id="wl-msg"></div>
-  <p class="tiny">No card now. One email when episode one lands this July, one when your seat opens. That's all.</p>
+  <a class="btn btn-primary" id="reserve-btn" href="#" onclick="return goCheckout()">Reserve my founding seat — <span id="btn-price">$49</span></a>
+  <p class="tiny">Secure checkout via Stripe · 100% refundable anytime before Episode One · takes 30 seconds</p>
+  <p class="tiny"><a href="#" id="notify-link" onclick="document.getElementById('notify-wrap').style.display='block';this.style.display='none';return false;" style="color:var(--amber)">Not ready? Get a free launch reminder →</a></p>
+  <div id="notify-wrap" style="display:none;margin-top:8px">
+    <form id="wl-form" onsubmit="return submitWaitlist(event)">
+      <input type="email" id="wl-email" placeholder="your@email.com" required>
+      <button type="submit" id="wl-btn">Notify me</button>
+    </form>
+    <div class="form-msg" id="wl-msg"></div>
+  </div>
 </div></section>
 
 <footer><div class="wrap foot-in">
@@ -464,6 +463,41 @@ function track(event, meta){ try {
       path:location.pathname, meta:(meta||null) }, DK_UTM)) });
 } catch(e){} }
 track('page_view');
+
+/* --- founding-member price experiment (A/B/C) + Stripe checkout --- */
+var DK_LINKS = {
+  29:"https://buy.stripe.com/test_28EdR9bti6Is6BZdhe57W03",
+  49:"https://buy.stripe.com/test_28E9ATgNC6Is1hF3GE57W04",
+  79:"https://buy.stripe.com/test_8x2dR9dBq3wg1hF5OM57W05"
+};
+var DK_ANCHOR = 149;
+var DK_PRICE = (function(){
+  try { var p = localStorage.getItem('dk_price');
+    if(p && DK_LINKS[p]) return +p;
+    var b=[29,49,79], pick=b[Math.floor(Math.random()*b.length)];
+    localStorage.setItem('dk_price', pick); return pick;
+  } catch(e){ return 49; }
+})();
+(function(){
+  function set(id,v){ var el=document.getElementById(id); if(el) el.textContent=v; }
+  set('founding-price','$'+DK_PRICE); set('btn-price','$'+DK_PRICE); set('anchor-price','$'+DK_ANCHOR);
+  track('price_view', { price:DK_PRICE });
+})();
+function goCheckout(){
+  track('checkout_click', { price:DK_PRICE });
+  var url = DK_LINKS[DK_PRICE] || DK_LINKS[49];
+  setTimeout(function(){ location.href = url; }, 150);
+  return false;
+}
+(function(){ var pd = new URLSearchParams(location.search).get('paid');
+  if(pd){ track('paid', { price:+pd });
+    var s=document.getElementById('waitlist');
+    if(s){ var w=s.querySelector('.wrap'); if(w) w.innerHTML =
+      '<span class="kicker">YOU ARE A FOUNDING MEMBER</span>'+
+      '<h2>Your seat is <em>reserved</em>.</h2>'+
+      '<p class="seat-promise">Thank you — you are one of the first. We will email you the moment Episode One is ready. Fully refundable anytime before then.</p>'; }
+  }
+})();
 window.__dkMx = 0;
 (function(){ addEventListener('scroll', function(){
   const h = document.documentElement.scrollHeight - innerHeight;
