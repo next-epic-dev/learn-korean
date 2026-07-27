@@ -95,7 +95,9 @@ au.addEventListener('timeupdate',()=>{const t=au.currentTime;document.getElement
     document.querySelectorAll('.row').forEach((r,j)=>r.classList.toggle('on',j===i));renderNote();}});
 au.addEventListener('ended',onSceneComplete);
 function onSceneComplete(){document.getElementById('pb').style.display='flex';document.getElementById('pb').textContent='▶';
-  if(!window.__done){window.__done=1;track('scene_complete');document.getElementById('next-scene').style.display='block';}}
+  if(!window.__done){window.__done=1;track('scene_complete');
+    var b=document.getElementById('next-scene');b.style.display='block';
+    setTimeout(function(){b.scrollIntoView({behavior:'smooth',block:'center'});},140);}}
 // replay one scene line (used by the 'you can already read' card — tap to hear)
 function replayLine(i){var s=LINES[i].start, e=(i+1<LINES.length)?LINES[i+1].start:((au.duration||s+4));
   try{au.pause();au.currentTime=s+0.01;au.play();}catch(err){}
