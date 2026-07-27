@@ -77,6 +77,11 @@ au.addEventListener('timeupdate',()=>{const t=au.currentTime;document.getElement
 au.addEventListener('ended',onSceneComplete);
 function onSceneComplete(){document.getElementById('pb').style.display='flex';document.getElementById('pb').textContent='▶';
   if(!window.__done){window.__done=1;track('scene_complete');document.getElementById('next-scene').style.display='block';}}
+// replay one scene line (used by the 'you can already read' card — tap to hear)
+function replayLine(i){var s=LINES[i].start, e=(i+1<LINES.length)?LINES[i+1].start:((au.duration||s+4));
+  try{au.pause();au.currentTime=s+0.01;au.play();}catch(err){}
+  clearTimeout(window.__rt);window.__rt=setTimeout(function(){au.pause();},Math.max(700,(e-s)*1000));
+  track('replay_line',{line:i});}
 
 // --- check (quiz) — 한글/로마자/영어 3단으로 대사 제시 후 영어 질문 ---
 let quizIdx=0, quizCorrect=0;
@@ -102,11 +107,11 @@ function answerQuiz(i){const q=QUIZ[quizIdx];if(i===q.answer)quizCorrect++;
       '<h2 class="serif" style="font-size:24px;margin-bottom:6px">5 minutes ago, this was just noise. Now you understand it.</h2>'+
       '<p style="color:var(--amber-hi);margin-bottom:18px">'+scoreLine+'</p>'+
       '<div style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:18px">'+
-        '<div style="font-size:12px;letter-spacing:.12em;color:var(--muted);margin-bottom:10px">YOU CAN ALREADY READ</div>'+
-        '<div style="display:grid;gap:12px;font-size:15px">'+
-          '<div><b style="color:var(--amber-hi)">오랜만이다</b> <span style="color:var(--muted)">oraenmanida</span><br><span style="color:var(--sub);font-size:14px">it\'s been so long</span></div>'+
-          '<div><b style="color:var(--amber-hi)">하나도 못 지냈어</b> <span style="color:var(--muted)">hanado mot jinaesseo</span><br><span style="color:var(--sub);font-size:14px">I wasn\'t okay — not even a little</span></div>'+
-          '<div><b style="color:var(--amber-hi)">왜 이제 왔어</b> <span style="color:var(--muted)">wae ije wasseo</span><br><span style="color:var(--sub);font-size:14px">why did you only come now</span></div>'+
+        '<div style="font-size:12px;letter-spacing:.12em;color:var(--muted);margin-bottom:10px">YOU CAN ALREADY READ <span style="letter-spacing:0;text-transform:none;color:var(--amber-hi)">· tap a line to hear it</span></div>'+
+        '<div style="display:grid;gap:14px;font-size:15px">'+
+          '<div onclick="replayLine(1)" style="cursor:pointer"><b style="color:var(--amber-hi)">오랜만이다</b> <span style="color:var(--muted)">oraenmanida</span> <span style="font-size:13px">🔊</span><br><span style="color:var(--sub);font-size:14px">it\'s been so long</span></div>'+
+          '<div onclick="replayLine(4)" style="cursor:pointer"><b style="color:var(--amber-hi)">하나도 못 지냈어</b> <span style="color:var(--muted)">hanado mot jinaesseo</span> <span style="font-size:13px">🔊</span><br><span style="color:var(--sub);font-size:14px">I wasn\'t okay — not even a little</span></div>'+
+          '<div onclick="replayLine(5)" style="cursor:pointer"><b style="color:var(--amber-hi)">왜 이제 왔어</b> <span style="color:var(--muted)">wae ije wasseo</span> <span style="font-size:13px">🔊</span><br><span style="color:var(--sub);font-size:14px">why did you only come now</span></div>'+
         '</div>'+
       '</div>'+
       '<p style="margin-bottom:8px">No streaks. No cartoon owl. No “the apple is red.” You learned real K-drama lines because you wanted to know what happens next — that\'s the whole method.</p>'+
