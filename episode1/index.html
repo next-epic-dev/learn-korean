@@ -92,10 +92,25 @@ function answerQuiz(i){const q=QUIZ[quizIdx];if(i===q.answer)quizCorrect++;
   quizIdx++;
   if(quizIdx<QUIZ.length){paintQuiz();}
   else{track('quiz_done',{correct:quizCorrect,total:QUIZ.length});
-    document.getElementById('quiz-wrap').innerHTML='<h2 style="font-size:22px">You just understood all that — no subtitles.</h2>'+
-    '<p style="color:var(--sub);margin:10px 0 4px">'+quizCorrect+' / '+QUIZ.length+' correct</p>'+
-    '<p style="margin-bottom:8px">That was one scene. The next one shows where this whole story began.</p>'+
-    '<button class="btn" onclick="showStage(\'reward\')">See the next scene →</button>';}}
+    var n=quizCorrect, tot=QUIZ.length;
+    var scoreLine = (n===tot)
+      ? tot+' for '+tot+' — on Korean you had never seen before tonight.'
+      : (n===0
+         ? "Even the ones you missed, you can feel now. That's how this works — one scene at a time."
+         : 'You caught '+n+' of '+tot+" — on lines you'd never seen before tonight. You're not memorizing this. You're picking it up.");
+    document.getElementById('quiz-wrap').innerHTML=
+      '<h2 class="serif" style="font-size:24px;margin-bottom:6px">5 minutes ago, this was just noise. Now you understand it.</h2>'+
+      '<p style="color:var(--amber-hi);margin-bottom:18px">'+scoreLine+'</p>'+
+      '<div style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:18px">'+
+        '<div style="font-size:12px;letter-spacing:.12em;color:var(--muted);margin-bottom:10px">YOU CAN ALREADY READ</div>'+
+        '<div style="display:grid;gap:9px;font-size:15px">'+
+          '<div><b style="color:var(--amber-hi)">오랜만이다</b> <span style="color:var(--sub)">· it\'s been so long</span></div>'+
+          '<div><b style="color:var(--amber-hi)">하나도 못 지냈어</b> <span style="color:var(--sub)">· I wasn\'t okay — not even a little</span></div>'+
+          '<div><b style="color:var(--amber-hi)">왜 이제 왔어</b> <span style="color:var(--sub)">· why did you only come now</span></div>'+
+        '</div>'+
+      '</div>'+
+      '<p style="margin-bottom:8px">No streaks. No cartoon owl. No “the apple is red.” You learned real K-drama lines because you wanted to know what happens next — that\'s the whole method.</p>'+
+      '<button class="btn" onclick="showStage(\'reward\')">See what happens next →</button>';}}
 
 // --- next-scene teaser (reward) ---
 function renderReward(){track('teaser_view');
