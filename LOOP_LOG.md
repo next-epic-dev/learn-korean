@@ -2,6 +2,102 @@
 
 ---
 
+## 2026-07-29 09:45 UTC — 루프 6
+
+**🟢 egress 열렸다 (6루프 만에). Supabase·TikTok·GitHub Pages 전부 200.
+그리고 6루프 동안 "scene_play 0"으로 우리를 괴롭히던 미스터리가 풀렸다 —
+그 0은 고쳐진 페이지의 성적표가 아니었다.**
+
+### 데이터 스냅샷 (실측, 처음으로)
+- 이벤트 총 1000행(RPC 상한), 2026-07-22 ~ 07-29 09:44 UTC
+- 테스트 세션 1개(`mrw64tp7v313fh`) 제외 → 실사용 **499세션**
+- **페이지가 둘 섞여 있었다**: `/learn-korean/episode1/` 287세션,
+  루트 랜딩 `/learn-korean/` 212세션. 이벤트 어휘가 완전히 다르다
+  (루트는 price_view·cta_click·signup_success·scroll_25~90)
+- episode1 퍼널: page_view 287 → scene_play **0** → 이하 전부 0
+- 루트 랜딩: page_view 211 → scroll_25 41(19%) → price_view 72(34%)
+  → cta_click 2 → **signup_success 1**
+- 틱톡 실지출: 07-28 **$28.60** / 클릭 304 / CPC $0.09 / CTR 5.14%,
+  **07-29(오늘) $0.00** → 오늘 $30 한도 전액 여유
+
+### 🔑 핵심 발견 — "scene_play 0"은 고친 페이지의 데이터가 아니다
+episode1 299 page_view 중 **298개가 수정 이전 빌드**였다. 근거 두 개가 일치한다:
+- `session_id` 길이 **14** (구 빌드 `slice(2,8)`), 현행 빌드는 **16**
+- `page_view.meta`가 **null** — 현행 빌드는 항상 `{did,repeat,store}`를 보낸다
+
+그리고 시간축이 이걸 확정한다:
+
+| | |
+|---|---|
+| 구 빌드 트래픽 | 07-28 190건 + 07-29 00~06:26 UTC 108건 |
+| 수정 배포 | 07:12 UTC(세션id) · 08:10 UTC(leave 비콘) |
+| 수정 후 실사용 세션 | **1개** (09:13 UTC, len 16, meta 정상) |
+
+즉 **고쳐진 페이지는 아직 사실상 한 명도 보지 못했다.** 루프 1~5가 축적한
+"249~287명이 전원 재생을 안 눌렀다"는 공포는 **깨진 빌드의 기록**이었다.
+`perf` 5건/`first_tap` 0건도 같은 이유 — 구 빌드엔 그 계측 자체가 없었다.
+
+### 라이브 페이지는 실제로 동작한다 (실측으로 확인)
+- 라이브 HTML 직접 fetch(200, 698,524B) → **로컬 HEAD와 md5 동일**
+  (`6f53baa5…`) — 배포 확인. track/dk_events 적재 코드 생존 확인
+- 헤드리스 Chromium + 틱톡 웹뷰 UA(390×664)로 실제 재생까지:
+  `page_view → perf{kb:682,load:154} → first_tap → scene_play → scene_audio_ok{ms:3821}`
+  전부 발화, **오디오 실제 재생(paused:false, currentTime 6.8s)**, pageerror 0
+- 재생 버튼 박스 y=317~369 → 폴드 안 (루프 5 결론 재확인)
+
+### 결정과 근거 → **백로그 2) 라운드2 점화**
+막고 있던 조건이 전부 해소됐다: 페이지 정상 확인 ✅ 배포 확인 ✅ 오늘 지출 $0 ✅
+그리고 "판을 다시 깔아야 한다"는 근거가 하나 더 나왔다 — **라운드1은 Pangle이
+켜져 있었다.** 구 광고그룹은 `PLACEMENT_TYPE_AUTOMATIC`
+(`PLACEMENT_TIKTOK` + `GLOBAL_APP_BUNDLE` + **`PANGLE`**), 연령·관심사 타겟 **없음**.
+CTR 5.14%에 CPC $0.09짜리 클릭 304개의 정체가 이걸로 설명된다.
+깨진 페이지 × Pangle 트래픽 = 라운드1 데이터는 두 겹으로 무효다.
+
+**이번 루프의 의미 있는 변수 변경 1개 = 트래픽 재점화.** 가격·훅·카피는 손대지 않았다
+(오퍼 도달 0이므로 가격 실험은 아직 근거 없음).
+
+### 실행 내용
+**1) 새 광고그룹 `1872041858734178` — DramaKorean_Ep1_US_r2_ttonly**
+(기존 캠페인 `1871949785120465` **안에** 생성. 새 캠페인 만들지 않음. GlowGate 무접촉.)
+
+| 항목 | 값 |
+|---|---|
+| 지면 | `PLACEMENT_TYPE_NORMAL` / **`PLACEMENT_TIKTOK` 단독 (Pangle 제외)** |
+| 지역·연령 | 미국(6252001) / AGE_25_34·35_44·45_54 |
+| 관심사 | K-Dramas, Korean drama, korean dramas, learn Korean, language learning |
+| 예산 | **$30/일** (BUDGET_MODE_DAY), CPC/CLICK, smooth pacing |
+| 스케줄 | 07-29 04:53 → 07-30 04:43 (계정 tz UTC-5) — 24h 안전 종료 |
+
+**2) 광고 `1872041900786353` — dk_ep1_captioned_v1_r2**
+기존 영상·아이덴티티·카피 그대로 재사용(변수 고정). 랜딩 URL만
+`utm_campaign=dramakorean_ep1_r2`로 분리 → 라운드2를 구 트래픽과 섞이지 않게 읽는다.
+현재 둘 다 `ENABLE` / 심사중(AUDIT).
+
+**3) `tools/dk_read.py` 두 가지 판독 결함 수정** — 이번 루프가 직접 당한 것들이다
+- **RPC 1000행 상한이 조용하다.** 첫 호출이 그대로 잘린 창을 돌려줬고, 나는
+  거기서 "499세션"을 읽었다. → `since`를 앞으로 밀며 페이징 + 창 구간 출력
+- **두 페이지를 한 퍼널에 섞고 있었다.** 루트+episode1을 합쳐 "page_view 498 →
+  scene_play 0"으로 찍혀서, 루트에서 멀쩡히 일어나던 34% price_view와
+  signup_success 1건이 통째로 안 보였다. → `--path`로 페이지 단위 스코프(기본 episode1),
+  페이지별 page_view 분포 출력
+- 추가: `meta:null` page_view = 구 빌드 트래픽이므로 **경고로 표면화**
+  (다음 루프가 같은 착시에 빠지지 않게)
+
+### 다음 루프 제안
+1. **먼저 `python3 tools/dk_read.py --spend`.** $30 초과면 `1872041858734178` 즉시 정지.
+2. 심사 통과·집행 시작 여부 확인(`ADGROUP_STATUS_AUDIT` → DELIVERY_OK).
+   심사에서 막혔으면 그게 이번 루프의 유일한 블로커다.
+3. `python3 tools/dk_read.py --since 2026-07-29T09:45:00Z` 로 **라운드2만** 판독.
+   `utm_campaign=dramakorean_ep1_r2`만 진짜 신규다. 판독 순서:
+   - `perf`/`first_tap`이 page_view 대비 정상 비율로 오는가 → 페이지가 실제로 뜨는가
+   - `scene_play` → `scene_audio_ok` 비율 낮으면 무음/자막 우선 모드
+   - `leave.sec` 3초 미만 집중이면 훅 불일치
+   - `offer_view` 도달 후 `checkout_click` 0(n≥20)이면 그때 $29 테스트
+4. 규율: 새 실사용 세션 30개 미만이면 큰 변수 손대지 말 것. 라운드2 데이터가
+   **처음으로 고쳐진 페이지의 데이터**다 — 오염시키지 말고 그대로 받을 것.
+
+---
+
 ## 2026-07-29 09:10 UTC — 루프 5
 
 **⚠ egress 차단 5연속. 이제 이건 이 루프의 유일한 블로커다 — 계측·성능·버그 위생은

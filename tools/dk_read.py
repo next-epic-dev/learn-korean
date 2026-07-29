@@ -32,7 +32,10 @@ FUNNEL = ["page_view", "scene_play", "scene_complete", "quiz_done",
           "teaser_view", "offer_view", "checkout_click"]
 
 
-def fetch_rows(since):
+RPC_ROW_CAP = 1000  # the RPC silently truncates at 1000 rows
+
+
+def _fetch_page(since):
     req = urllib.request.Request(
         SUPABASE_URL + "/rest/v1/rpc/dk_events_read",
         data=json.dumps({"since": since}).encode(),
@@ -40,8 +43,36 @@ def fetch_rows(since):
                  "apikey": SUPABASE_KEY,
                  "Authorization": "Bearer " + SUPABASE_KEY},
         method="POST")
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode())
+
+
+def fetch_rows(since):
+    """Page past the RPC's 1000-row cap by walking `since` forward.
+
+    The cap is silent: a full page means there is almost certainly more data
+    behind it. Loop 6 read a truncated window and drew the wrong conclusion
+    from it, so never trust a single call again.
+    """
+    seen, out, cur = set(), [], since
+    for _ in range(60):
+        page = _fetch_page(cur)
+        if not page:
+            break
+        for r in page:
+            k = (r.get("created_at"), r.get("session_id"), r.get("event"),
+                 json.dumps(r.get("meta"), sort_keys=True))
+            if k not in seen:
+                seen.add(k)
+                out.append(r)
+        if len(page) < RPC_ROW_CAP:
+            break
+        nxt = max(r["created_at"] for r in page)
+        if nxt == cur:  # >1000 rows share one timestamp; cannot advance
+            print(f"!! cannot page past {cur} — results may be truncated")
+            break
+        cur = nxt
+    return out
 
 
 def clean(rows):
@@ -87,18 +118,45 @@ def pct(a, b):
     return f"{(100.0*a/b):.1f}%" if b else "n/a"
 
 
-def report(rows):
+def report(rows, path=None):
     kept, dropped = clean(rows)
     print(f"rows: {len(rows)} raw -> {len(kept)} after exclusions "
           f"({len(dropped)} sessions dropped)")
     for sid, why in list(dropped.items())[:10]:
         print(f"   drop {sid}: {why}")
+    if kept:
+        ts = sorted(r["created_at"] for r in kept)
+        print(f"   window: {ts[0]} -> {ts[-1]}")
+
+    # The root landing page and episode1 are DIFFERENT experiences with different
+    # event vocabularies. Pooling them makes episode1's funnel unreadable, so the
+    # funnel is always scoped to one page.
+    seen_paths = defaultdict(int)
+    for r in kept:
+        if r.get("event") == "page_view":
+            seen_paths[r.get("path")] += 1
+    print("\n  page_views by path: " + ", ".join(
+        f"{p}={n}" for p, n in sorted(seen_paths.items(), key=lambda x: -x[1])))
+
+    if path:
+        sids = {r["session_id"] for r in kept if r.get("path") == path}
+        kept = [r for r in kept if r["session_id"] in sids]
+        print(f"  -> funnel scoped to {path}")
 
     sess = defaultdict(set)
     for r in kept:
         sess[r["session_id"]].add(r.get("event"))
     total = len(sess)
     print(f"\nreal sessions: {total}")
+
+    # A build older than the loop-1 instrumentation emits 14-char session ids and
+    # a null page_view meta. Those visitors never had the fixes, so their zeros say
+    # nothing about the current page — surface them instead of scoring them.
+    pvs = [r for r in kept if r.get("event") == "page_view"]
+    stale = sum(1 for r in pvs if r.get("meta") is None)
+    if pvs and stale:
+        print(f"  !! {stale}/{len(pvs)} page_views are from a PRE-FIX build "
+              f"(null meta) — exclude them before judging the funnel")
 
     print("\n--- FUNNEL (sessions reaching each step) ---")
     prev = None
@@ -197,6 +255,8 @@ if __name__ == "__main__":
     ap.add_argument("--since", default="2026-07-29T00:00:00Z")
     ap.add_argument("--json", help="read rows from a local JSON file instead of the network")
     ap.add_argument("--spend", action="store_true", help="TikTok spend check only")
+    ap.add_argument("--path", default="/learn-korean/episode1/",
+                    help="scope the funnel to one page ('' = all pages pooled)")
     a = ap.parse_args()
     if a.spend:
         spend_today(); sys.exit(0)
@@ -207,4 +267,4 @@ if __name__ == "__main__":
             rows = fetch_rows(a.since)
         except Exception as e:
             print(f"fetch failed: {e}", file=sys.stderr); sys.exit(2)
-    report(rows)
+    report(rows, a.path or None)
