@@ -171,6 +171,58 @@ def client_audit(kept, sess):
         print("       verdict on the product. Re-read it against human sessions only.")
 
 
+def arrival_audit(kept, sess):
+    """Separate loads a person caused from loads the webview caused on its own.
+
+    A prefetched or prerendered document parses like a real arrival -- page_view, perf, no
+    taps -- so it counts as a bounce it never was. On 07-29 eight fresh US devices landed
+    with transferSize 0 AND responseStart 0 while TikTok reported fewer clicks than we
+    recorded landings, which is only possible if some documents were fetched without a tap.
+    Same rule as client_audit: label loudly, subtract nothing. Pre-l16 sessions have none of
+    these fields, so they are reported as unknown rather than quietly assumed human.
+    """
+    pvs = [r for r in kept if r.get("event") == "page_view"]
+    if not pvs:
+        return
+    perf = {r.get("session_id"): (r.get("meta") or {})
+            for r in kept if r.get("event") == "perf"}
+    saw_visible = {r.get("session_id") for r in kept if r.get("event") == "visible"}
+
+    instrumented, never_seen, preloaded, zero_wire, real = 0, [], [], [], 0
+    for r in pvs:
+        sid, m = r.get("session_id"), (r.get("meta") or {})
+        p = perf.get(sid) or {}
+        has_fields = ("vs" in m) or ("dt" in p)
+        dt, act = p.get("dt"), p.get("as")
+        if dt == "navigational-prefetch" or (act or 0) > 0 or m.get("pr") == 1:
+            preloaded.append((sid, dt or (f"activationStart={act}" if act else "prerendering")))
+        if has_fields:
+            instrumented += 1
+            if sid not in saw_visible:
+                never_seen.append((sid, f"vs={m.get('vs')}"))
+            else:
+                real += 1
+        elif p.get("kb") == 0 and p.get("ttfb") == 0:
+            # pre-l16 fallback: a document that crossed no network on a first-ever visit
+            zero_wire.append(sid)
+
+    print(f"  arrival provenance: {instrumented}/{len(pvs)} page_views instrumented (l16+)")
+    if preloaded:
+        print(f"    preloaded by the webview: {len(preloaded)} (NOT excluded — judge first)")
+        for sid, why in preloaded[:8]:
+            print(f"      {sid}  {why}")
+    if never_seen:
+        print(f"    never became visible: {len(never_seen)} — these are NOT bounces")
+        for sid, why in never_seen[:8]:
+            print(f"      {sid}  {why}")
+    if instrumented:
+        print(f"    confirmed seen by a human: {real}/{instrumented}")
+    if zero_wire:
+        print(f"    pre-l16, zero-transfer + ttfb 0: {len(zero_wire)}/{len(pvs)} "
+              f"— provenance UNKNOWN, do not score as bounces")
+        print("      " + ", ".join(zero_wire[:8]))
+
+
 def pct(a, b):
     return f"{(100.0*a/b):.1f}%" if b else "n/a"
 
@@ -291,6 +343,7 @@ def report(rows, path=None):
     pv = counts["page_view"]
 
     client_audit(kept, sess)
+    arrival_audit(kept, sess)
 
     store0 = sum(1 for r in kept if r.get("event") == "page_view"
                  and (r.get("meta") or {}).get("store") == 0)

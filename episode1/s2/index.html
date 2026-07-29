@@ -13,7 +13,7 @@ const DK_T0=Date.now();
    same error that made loops 1-5 read a broken build's zeros as a hook problem. So the page
    states its own build, and the reader segments on it. Bump on every deploy that changes
    what a visitor experiences. */
-const DK_BUILD="2026-07-29-l13-s2";
+const DK_BUILD="2026-07-29-l16-s2";
 /* QA/automation traffic must never look like a real visitor. Every loop verifies the live
    page with a headless browser, and those loads land in the same table as paid traffic —
    page_view + perf with no taps, i.e. a perfect fake bounce. Tag them with a PREVIEW-
@@ -52,7 +52,16 @@ const DK_DEV=(function(){try{var d=localStorage.getItem('dk_did');if(d)return{id
 }catch(e){return{id:null,repeat:0};}})();
 const DK_UTM=(function(){const p=new URLSearchParams(location.search);return{utm_source:p.get('utm_source'),utm_medium:p.get('utm_medium'),utm_campaign:p.get('utm_campaign'),utm_content:p.get('utm_content'),referrer:(document.referrer||null)};})();
 function track(event,meta){try{fetch(SUPABASE_URL+'/rest/v1/dk_events',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json',apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,Prefer:'return=minimal'},body:JSON.stringify(Object.assign({session_id:DK_SID,person_id:DK_PID,event:event,path:location.pathname,meta:(meta||null)},DK_UTM))});}catch(e){}}
-track('page_view',{did:DK_DEV.id,repeat:DK_DEV.repeat,store:DK_DEV.id?1:0,b:DK_BUILD,c:DK_CLI});
+/* Was anyone actually LOOKING when this page_view fired? The script runs at parse time, and
+   a document the webview fetched on its own -- prefetch, prerender, background warm-up --
+   parses exactly like a real arrival: same page_view, same perf, no taps. On 07-29 eight
+   fresh US devices landed with transferSize 0 AND responseStart 0 (a document that crossed
+   no network) while TikTok reported FEWER clicks than we recorded landings. A load nobody
+   saw is not a bounce, but it is shaped like one, and reading it as one would put the third
+   false 'nobody engages' verdict on the board. So the page states its own visibility. */
+track('page_view',{did:DK_DEV.id,repeat:DK_DEV.repeat,store:DK_DEV.id?1:0,b:DK_BUILD,c:DK_CLI,
+  vs:(function(){try{return document.visibilityState;}catch(e){return null;}})(),
+  pr:(function(){try{return document.prerendering?1:0;}catch(e){return null;}})()});
 
 /* The cover and its ▶ button paint at ~9KB, but the real startPlay() is defined further
    down the document. On a slow link that leaves a window where the button is visible and
@@ -64,10 +73,26 @@ function startPlay(){window.__wantPlay=1;
   var pl=document.getElementById('playhint');
   if(pl){pl.textContent='Loading the scene…';pl.style.display='block';}}
 
-var DK_MAXSCROLL=0,DK_SEQ=0,DK_VIS=0,DK_VIS_T0=Date.now();
+/* `sec` used to start its clock at parse time, which quietly assumed the document was on
+   screen the moment it parsed. A prefetched or prerendered load breaks that assumption in
+   the worst direction: it reports 1-2 seconds of "visible time" for a page no human ever
+   saw. Now the clock only opens when the document is genuinely visible, so a load nobody
+   looked at reports sec:0 with no `visible` event at all -- distinguishable, at last, from
+   a real visitor who arrived and left. Never counts the same span twice; open/close pair. */
+var DK_MAXSCROLL=0,DK_SEQ=0,DK_VIS=0,DK_VIS_T0=0,DK_EVERVIS=0;
+function dkVisOpen(){if(DK_VIS_T0)return;DK_VIS_T0=Date.now();
+  if(!DK_EVERVIS){DK_EVERVIS=1;track('visible',{ms:DK_VIS_T0-DK_T0});}}
+function dkVisClose(){if(!DK_VIS_T0)return;DK_VIS+=Date.now()-DK_VIS_T0;DK_VIS_T0=0;}
+try{if(document.visibilityState==='visible'&&!document.prerendering)dkVisOpen();}catch(e){dkVisOpen();}
+document.addEventListener('prerenderingchange',function(){dkVisOpen();},{once:true});
 addEventListener('load',function(){try{
   var n=(performance.getEntriesByType&&performance.getEntriesByType('navigation')[0])||null;
-  track('perf',n?{ttfb:Math.round(n.responseStart),dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventStart),kb:Math.round((n.transferSize||0)/1024)}
+  /* dt/as/nt are the spec'd provenance fields: deliveryType is 'navigational-prefetch' when
+     the document came from a prefetch cache, activationStart is >0 only for a prerender that
+     was later activated, and type separates navigate from back_forward. Together they answer
+     "did a person cause this load?" without guessing from transferSize. */
+  track('perf',n?{ttfb:Math.round(n.responseStart),dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventStart),kb:Math.round((n.transferSize||0)/1024),
+                  dt:(n.deliveryType===undefined?null:(n.deliveryType||'')),as:Math.round(n.activationStart||0),nt:n.type||null,vis:DK_EVERVIS}
                 :{ttfb:null,dcl:null,load:Date.now()-DK_T0,kb:null});
 }catch(e){}},{once:true});
 addEventListener('pointerdown',function(e){if(window.__dktap)return;window.__dktap=1;
@@ -89,14 +114,13 @@ addEventListener('scroll',function(){
    webview is killed while backgrounded. */
 function dkLeave(reason){
   var now=Date.now(),st=document.querySelector('.stage.on');
-  if(document.visibilityState!=='hidden')DK_VIS+=now-DK_VIS_T0;  /* close the open visible span */
-  DK_VIS_T0=now;
+  dkVisClose();  /* close the open visible span, if one is open at all */
   track('leave',{sec:Math.round(DK_VIS/1000),wall:Math.round((now-DK_T0)/1000),
-    seq:++DK_SEQ,why:reason,max_scroll:DK_MAXSCROLL,played:window.__played?1:0,stage:st?st.id:null});}
+    seq:++DK_SEQ,why:reason,vis:DK_EVERVIS,max_scroll:DK_MAXSCROLL,played:window.__played?1:0,stage:st?st.id:null});}
 addEventListener('pagehide',function(){dkLeave('pagehide');});
 addEventListener('visibilitychange',function(){
-  if(document.visibilityState==='hidden'){DK_VIS+=Date.now()-DK_VIS_T0;DK_VIS_T0=Date.now();dkLeave('hide');}
-  else DK_VIS_T0=Date.now();});
+  if(document.visibilityState==='hidden')dkLeave('hide');
+  else dkVisOpen();});
 </script>
 <title>DramaKorean — Episode One</title>
 <link rel="preload" as="image" href="../cover.jpg" fetchpriority="high">
