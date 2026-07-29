@@ -230,11 +230,65 @@ def report(rows, path=None):
     return counts
 
 
+def _acct_now():
+    """Account-timezone clock (UTC-5)."""
+    import datetime
+    return datetime.datetime.utcnow() - datetime.timedelta(hours=5)
+
+
+def delivery_watermark(today):
+    """Latest hour TikTok has actually reported, across every ad group.
+
+    TikTok's reporting runs hours behind real time. A freshly-approved ad group
+    therefore reads as '0 impressions, $0.00' no matter how well it is
+    delivering, simply because its whole life so far sits inside the unreported
+    window. Loop 8 hit this: approved 05:39 acct, watermark 04:00 acct.
+    Print the watermark next to every spend check so nobody ever again reads a
+    structural blind spot as evidence that an ad group is not delivering.
+
+    Returns the watermark as 'YYYY-MM-DD HH:MM:SS' acct time, or None.
+    """
+    params = {
+        "advertiser_id": ADVERTISER_ID, "report_type": "BASIC",
+        "data_level": "AUCTION_ADGROUP",
+        "dimensions": json.dumps(["adgroup_id", "stat_time_hour"]),
+        "metrics": json.dumps(["spend", "impressions"]),
+        "start_date": today, "end_date": today, "page_size": "1000",
+    }
+    q = urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        f"https://business-api.tiktok.com/open_api/v1.3/report/integrated/get/?{q}",
+        headers={"Access-Token": TIKTOK_TOKEN})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode())
+    except Exception as e:
+        print(f"  (watermark probe failed: {e})")
+        return None
+    hours = [row["dimensions"]["stat_time_hour"]
+             for row in (data.get("data") or {}).get("list", [])
+             if float(row.get("metrics", {}).get("impressions", 0) or 0) > 0]
+    if not hours:
+        print("  report watermark: no delivery reported yet today (any campaign) "
+              "-- freshness unknown, treat today's zeros as UNREADABLE")
+        return None
+    mark = max(hours)
+    now = _acct_now()
+    import datetime
+    lag_h = (now - datetime.datetime.strptime(mark, "%Y-%m-%d %H:%M:%S")).total_seconds() / 3600.0
+    print(f"  report watermark: {mark} acct  (acct now {now:%Y-%m-%d %H:%M})  "
+          f"-> ~{lag_h:.1f}h behind")
+    if lag_h >= 1.5:
+        print(f"    !! anything after {mark} is NOT reported yet. A zero inside that "
+              f"window is a BLIND SPOT, not evidence of non-delivery.")
+        print("       Live signal for the unreported window = dk_events sessions, not this report.")
+    return mark
+
+
 def spend_today():
     """Read-only TikTok spend check for the DramaKorean campaign."""
-    import datetime
     # account timezone is UTC-5
-    today = (datetime.datetime.utcnow() - datetime.timedelta(hours=5)).strftime("%Y-%m-%d")
+    today = _acct_now().strftime("%Y-%m-%d")
     params = {
         "advertiser_id": ADVERTISER_ID, "report_type": "BASIC",
         "data_level": "AUCTION_CAMPAIGN", "dimensions": json.dumps(["campaign_id"]),
@@ -255,7 +309,59 @@ def spend_today():
     print(f"\nDramaKorean spend today ({today}, acct tz UTC-5): ${total:.2f} / cap ${DAILY_CAP_USD}")
     if total > DAILY_CAP_USD:
         print("!!! OVER CAP -- pause the ad group now")
+    delivery_watermark(today)
     return total
+
+
+def reconcile(counts):
+    """Ad-side clicks vs page-side landed sessions.
+
+    Round 1 lost 266 clicks -> 249 sessions (~6%). A sudden widening of that gap
+    means clicks are not reaching the page at all (redirect/CDN/consent), which
+    is a completely different bug from 'they arrive and bounce'. Always read it
+    against the watermark: the report lags, dk_events does not, so a fresh
+    window legitimately shows more sessions than clicks.
+    """
+    today = _acct_now().strftime("%Y-%m-%d")
+    print("\n--- AD-SIDE RECONCILIATION (today, acct tz) ---")
+    mark = delivery_watermark(today)
+    params = {
+        "advertiser_id": ADVERTISER_ID, "report_type": "BASIC",
+        "data_level": "AUCTION_CAMPAIGN", "dimensions": json.dumps(["campaign_id"]),
+        "metrics": json.dumps(["spend", "clicks", "impressions"]),
+        "start_date": today, "end_date": today, "page_size": "100",
+    }
+    q = urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        f"https://business-api.tiktok.com/open_api/v1.3/report/integrated/get/?{q}",
+        headers={"Access-Token": TIKTOK_TOKEN})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode())
+    except Exception as e:
+        print(f"  (reconciliation failed: {e})")
+        return
+    clicks = imps = 0
+    for row in (data.get("data") or {}).get("list", []):
+        if row["dimensions"].get("campaign_id") == "1871949785120465":
+            clicks += int(float(row["metrics"].get("clicks", 0) or 0))
+            imps += int(float(row["metrics"].get("impressions", 0) or 0))
+    landed = counts.get("page_view", 0)
+    print(f"  reported impressions {imps} -> clicks {clicks}  vs  landed sessions {landed}")
+    if clicks and landed:
+        print(f"  click -> landing: {pct(landed, clicks)}"
+              " (round 1 baseline: 249/266 = 93.6%)")
+        if landed < 0.7 * clicks:
+            print("    !! clicks are not reaching the page -- check the landing URL, "
+                  "not the funnel")
+    elif not clicks and landed:
+        print("  clicks unreported but sessions are landing -> pure report lag, "
+              "trust dk_events")
+    elif clicks and not landed:
+        print("    !! clicks reported but ZERO sessions landed -- landing URL is broken")
+    else:
+        print("  nothing on either side yet"
+              + (f" (report only complete through {mark})" if mark else ""))
 
 
 if __name__ == "__main__":
@@ -263,6 +369,8 @@ if __name__ == "__main__":
     ap.add_argument("--since", default="2026-07-29T00:00:00Z")
     ap.add_argument("--json", help="read rows from a local JSON file instead of the network")
     ap.add_argument("--spend", action="store_true", help="TikTok spend check only")
+    ap.add_argument("--recon", action="store_true",
+                    help="also compare TikTok clicks against landed sessions")
     ap.add_argument("--path", default="/learn-korean/episode1/",
                     help="scope the funnel to one page ('' = all pages pooled)")
     a = ap.parse_args()
@@ -275,4 +383,6 @@ if __name__ == "__main__":
             rows = fetch_rows(a.since)
         except Exception as e:
             print(f"fetch failed: {e}", file=sys.stderr); sys.exit(2)
-    report(rows, a.path or None)
+    counts = report(rows, a.path or None)
+    if a.recon:
+        reconcile(counts)
