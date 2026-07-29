@@ -231,38 +231,64 @@ def poster_audit(kept, leaves):
     call for opposite fixes, so l18 records when cover.jpg finished (meta.art, ms from
     nav) alongside the visible dwell already in meta.sec. This only reports; it never
     drops a session -- same rule as client_audit and arrival_audit.
+
+    l18's `art` field read 0 for 5 of 5 real visitors -- one of them after its own `load`
+    event fired -- because iOS WebKit leaves the Resource Timing size fields at 0 and
+    `art` required a body size. So l19 measures the image's own onload (meta.artl) plus
+    onerror (meta.arte), and `art` survives only as the cross-check below. Sessions are
+    scored on artl when they have it; an l18-only row gets NO verdict, because a field
+    that cannot see is not evidence of an unseen poster.
     """
-    art = {}
+    artl, art, arte = {}, {}, set()
     for r in kept:
         if r.get("event") not in ("perf", "leave"):
             continue
         m = r.get("meta") or {}
-        if "art" not in m:
-            continue                     # pre-l18 row: no opinion, not a zero
-        sid, v = r.get("session_id"), m.get("art") or 0
-        if sid not in art or v > art[sid]:
-            art[sid] = v
-    if not art:
-        print("  poster paint: 0 sessions instrumented (pre-l18) — cannot tell a failed "
-              "hook from an unseen one")
+        sid = r.get("session_id")
+        if "art" in m:
+            v = m.get("art") or 0
+            if v > art.get(sid, -1):
+                art[sid] = v
+        if "artl" in m:                  # pre-l19 row: no opinion, not a zero
+            v = m.get("artl") or 0
+            if v > artl.get(sid, -1):
+                artl[sid] = v
+            if m.get("arte"):
+                arte.add(sid)
+    if not artl:
+        print(f"  poster paint: 0 sessions instrumented (pre-l19; {len(art)} on l18's "
+              "blind `art` field, which is NOT scored) — cannot tell a failed hook "
+              "from an unseen one")
         return
     secs = {r.get("session_id"): ((r.get("meta") or {}).get("sec") or 0) for r in leaves}
-    never = [s for s, v in art.items() if not v]
-    late = [s for s, v in art.items() if v and s in secs and v > secs[s] * 1000]
-    vals = sorted(v for v in art.values() if v)
+    failed = sorted(arte)
+    never = [s for s, v in artl.items() if not v and s not in arte]
+    late = [s for s, v in artl.items() if v and s in secs and v > secs[s] * 1000]
+    vals = sorted(v for v in artl.values() if v)
     med = vals[len(vals) // 2] if vals else 0
-    print(f"  poster paint: {len(art)} sessions instrumented (l18+), "
+    print(f"  poster paint: {len(artl)} sessions instrumented (l19+), "
           f"cover.jpg median {med}ms")
+    if failed:
+        print(f"    !! cover.jpg FAILED to load: {len(failed)} — {', '.join(failed[:6])}")
+        print("       that is our bug, not a fast exit — fix the image before reading dwell")
     if never:
         print(f"    never painted: {len(never)} — {', '.join(never[:6])}")
     if late:
         print(f"    left BEFORE the art painted: {len(late)} — {', '.join(late[:6])}")
+    # The cross-check that retires (or restores) l18's field. If artl says the poster
+    # arrived while art says it never did, `art` is measuring the browser, not the visitor.
+    both = [s for s in artl if s in art]
+    dis = [s for s in both if artl[s] and not art[s]]
+    if both:
+        print(f"    cross-check vs l18 `art`: {len(dis)}/{len(both)} sessions painted "
+              f"per artl but read 0 per art"
+              + ("  -> `art` is blind on this browser; ignore it" if dis else ""))
     unseen = len(never) + len(late)
-    if unseen > 0.4 * len(art) and len(art) >= 10:
+    if unseen > 0.4 * len(artl) and len(artl) >= 10:
         print("    !! a large share never saw the hook -> the fix is image weight, "
               "NOT the copy")
     elif unseen:
-        print(f"    ({unseen}/{len(art)} never saw the hook — needs n>=10 for a verdict)")
+        print(f"    ({unseen}/{len(artl)} never saw the hook — needs n>=10 for a verdict)")
 
 
 def pct(a, b):

@@ -13,7 +13,7 @@ const DK_T0=Date.now();
    same error that made loops 1-5 read a broken build's zeros as a hook problem. So the page
    states its own build, and the reader segments on it. Bump on every deploy that changes
    what a visitor experiences. */
-const DK_BUILD="2026-07-29-l18-s2";
+const DK_BUILD="2026-07-29-l19-s2";
 /* QA/automation traffic must never look like a real visitor. Every loop verifies the live
    page with a headless browser, and those loads land in the same table as paid traffic —
    page_view + perf with no taps, i.e. a perfect fake bounce. Tag them with a PREVIEW-
@@ -103,6 +103,29 @@ function dkArtEntry(e){try{
   if(!e||!e.name||e.name.indexOf('cover.jpg')<0)return 0;
   if(!((e.decodedBodySize||0)>0||(e.encodedBodySize||0)>0))return 0;
   return Math.round(e.responseEnd)||1;}catch(x){return 0;}}
+/* ...and that body-size guard is itself blind on the only browser we actually buy.
+   The first l18 cohort came back art:0 on 5 of 5 visitors -- including one whose `load`
+   event fired at 2245ms, i.e. the document finished loading its images and then reported
+   that the image never arrived. That is not a visitor behaviour, it is a dead field:
+   these same rows report kb:0 and ttfb:0 across every build, because iOS WebKit leaves
+   the Resource Timing SIZE fields at 0 (a memory-cache hit reads 0 there, unlike the
+   Chromium harness where the guard was verified). So `art` cannot tell "no body" from
+   "no numbers", and 100% unseen would have sent the next loop to re-encode a 139KB image
+   that visitors may well have been looking at. Loops 1-5 burned on exactly this shape of
+   confident zero.
+   So the poster now reports through the image ITSELF, which needs no size accounting:
+   an onload timestamp (artl, ms from nav), with complete+naturalWidth as the cache-hit
+   fallback, and onerror recorded separately (arte) so a genuine failure can never again
+   masquerade as "left too early". `art` is kept alongside it purely as the cross-check
+   that proves which of the two fields to trust. No new request: same URL as the existing
+   preload and the #player CSS background, so it resolves from that fetch. */
+var DK_ARTL=0,DK_ARTE=0,DK_ARTIMG=null;
+try{DK_ARTIMG=new Image();
+  DK_ARTIMG.onload=function(){if(!DK_ARTL)DK_ARTL=Math.round(performance.now())||1;};
+  DK_ARTIMG.onerror=function(){DK_ARTE=1;};
+  DK_ARTIMG.src='../cover.jpg';}catch(e){}
+function dkArtL(){try{if(!DK_ARTL&&DK_ARTIMG&&DK_ARTIMG.complete&&DK_ARTIMG.naturalWidth>0)DK_ARTL=1;}catch(e){}
+  return DK_ARTL;}
 try{new PerformanceObserver(function(l){l.getEntries().forEach(function(e){
   if(!DK_ART)DK_ART=dkArtEntry(e);});
 }).observe({type:'resource',buffered:true});}catch(e){}
@@ -126,8 +149,8 @@ addEventListener('load',function(){try{
      "did a person cause this load?" without guessing from transferSize. */
   track('perf',n?{ttfb:Math.round(n.responseStart),dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventStart),kb:Math.round((n.transferSize||0)/1024),
                   dt:(n.deliveryType===undefined?null:(n.deliveryType||'')),as:Math.round(n.activationStart||0),nt:n.type||null,vis:DK_EVERVIS,
-                  fcp:dkFcp(),art:dkArt()}
-                :{ttfb:null,dcl:null,load:Date.now()-DK_T0,kb:null,fcp:dkFcp(),art:dkArt()});
+                  fcp:dkFcp(),art:dkArt(),artl:dkArtL(),arte:DK_ARTE}
+                :{ttfb:null,dcl:null,load:Date.now()-DK_T0,kb:null,fcp:dkFcp(),art:dkArt(),artl:dkArtL(),arte:DK_ARTE});
 }catch(e){}},{once:true});
 addEventListener('pointerdown',function(e){if(window.__dktap)return;window.__dktap=1;
   var t=(e.target&&(e.target.id||e.target.className||e.target.tagName))||'';
@@ -151,9 +174,10 @@ function dkLeave(reason){
   dkVisClose();  /* close the open visible span, if one is open at all */
   track('leave',{sec:Math.round(DK_VIS/1000),wall:Math.round((now-DK_T0)/1000),
     seq:++DK_SEQ,why:reason,vis:DK_EVERVIS,max_scroll:DK_MAXSCROLL,played:window.__played?1:0,stage:st?st.id:null,
-    /* art vs wall is the whole point: art:0 (or art > wall*1000) means this visitor left
-       before the poster ever painted, and their silence says nothing about the hook. */
-    art:dkArt(),fcp:dkFcp()});}
+    /* artl vs sec is the whole point: artl:0 with arte:0 (or artl > sec*1000) means this
+       visitor left before the poster ever painted, and their silence says nothing about
+       the hook. arte:1 says the image FAILED -- a bug on us, not a fast exit. */
+    art:dkArt(),artl:dkArtL(),arte:DK_ARTE,fcp:dkFcp()});}
 addEventListener('pagehide',function(){dkLeave('pagehide');});
 addEventListener('visibilitychange',function(){
   if(document.visibilityState==='hidden')dkLeave('hide');
