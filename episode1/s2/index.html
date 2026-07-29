@@ -13,7 +13,7 @@ const DK_T0=Date.now();
    same error that made loops 1-5 read a broken build's zeros as a hook problem. So the page
    states its own build, and the reader segments on it. Bump on every deploy that changes
    what a visitor experiences. */
-const DK_BUILD="2026-07-29-l16-s2";
+const DK_BUILD="2026-07-29-l17-s2";
 /* QA/automation traffic must never look like a real visitor. Every loop verifies the live
    page with a headless browser, and those loads land in the same table as paid traffic —
    page_view + perf with no taps, i.e. a perfect fake bounce. Tag them with a PREVIEW-
@@ -169,11 +169,15 @@ addEventListener('visibilitychange',function(){
     <div id="prog"></div>
     <div id="subs"><div id="who"></div><div id="ko" onclick="toggleNote()"></div><div id="rom"></div><div id="en"></div></div>
     <div id="taptip">👆 tap the Korean line to translate</div>
-    <div id="cover">
+    <!-- The cover is the poster for a scene, so people tap the artwork, not the small button
+         inside it -- one of this window's four taps landed on this div and nothing happened.
+         A poster that looks playable must be playable, so the whole surface starts the scene.
+         The button keeps its own handler and stops propagation so one tap is one startPlay(). -->
+    <div id="cover" onclick="startPlay()">
       <div class="ck">EPISODE ONE · <span style="color:var(--amber-hi)">free</span></div>
       <div class="ch serif">Your first scene.</div>
       <div class="cp">A short K-drama scene. Tap any Korean line to see what it means — by the end, you'll understand it with the subtitles off.</div>
-      <button class="btn" style="max-width:260px;margin:20px auto 0" onclick="startPlay()">▶ Play the scene</button>
+      <button class="btn" style="max-width:260px;margin:20px auto 0" onclick="event.stopPropagation();startPlay()">▶ Play the scene</button>
       <div class="cs">🎧 sound on — headphones recommended</div>
       <div id="playhint">Sound didn't start — tap ▶ once more.</div>
     </div>
@@ -198,9 +202,22 @@ function showStage(name){document.querySelectorAll('.stage').forEach(s=>s.classL
 // --- scene player (한글/로마자/영어 3단 자막) ---
 const au=document.getElementById('au');let cur=-1,noteOpen=false;
 const sc=document.getElementById('script');
+/* Seeking is the one operation in this player that can throw. The audio is preload="none",
+   so until a play() pulls metadata the element sits at readyState 0, and in iOS WebKit --
+   which is 100% of our paid traffic -- assigning currentTime in that state raises
+   InvalidStateError. replayLine() below has always guarded it; the line-tap handler did not,
+   and it ran the assignment BEFORE startPlay(). So the very gesture the page asks for
+   ("tap the Korean line") threw on its first statement and startPlay() was never reached:
+   no playback, no scene_play, no visible response of any kind. Four taps arrived in one
+   window and all four died this way. Order fixed (play first, seek second) and the seek now
+   waits for metadata when it has to, so the requested line is still where playback lands. */
+function dkSeek(t){try{if(au.readyState>0){au.currentTime=t;return;}}catch(e){}
+  window.__seekTo=t;
+  au.addEventListener('loadedmetadata',function(){
+    try{au.currentTime=window.__seekTo;}catch(e){}},{once:true});}
 LINES.forEach((l,i)=>{const r=document.createElement('div');r.className='row';r.id='r'+i;
   r.innerHTML=`<span class="w">${l.who}</span><span class="k">${l.ko}</span><span class="r">${l.rom}</span><span class="e">${l.en}</span>`;
-  r.onclick=()=>{au.currentTime=l.start+0.01;startPlay();};sc.appendChild(r);});
+  r.onclick=()=>{startPlay();dkSeek(l.start+0.01);};sc.appendChild(r);});
 /* Playback recovery. In in-app webviews (TikTok, IG) au.play() can reject outright, or
    resolve and never advance. startPlay has already hidden the cover and the play button by
    then, so without this the user is stranded on a silent, dead screen. Any failure puts the
