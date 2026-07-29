@@ -146,10 +146,14 @@ def report(rows, path=None):
     print("\n  page_views by path: " + ", ".join(
         f"{p}={n}" for p, n in sorted(seen_paths.items(), key=lambda x: -x[1])))
 
+    # Prefix, not equality: loop 12 moved the paid landing to a fresh sub-path
+    # (/episode1/s2/) to escape a path-keyed cache that was still serving round-1
+    # HTML. Both paths are the same funnel, so exact matching would have silently
+    # dropped every new paid session from the count.
     if path:
-        sids = {r["session_id"] for r in kept if r.get("path") == path}
+        sids = {r["session_id"] for r in kept if (r.get("path") or "").startswith(path)}
         kept = [r for r in kept if r["session_id"] in sids]
-        print(f"  -> funnel scoped to {path}")
+        print(f"  -> funnel scoped to {path}* (prefix)")
 
     sess = defaultdict(set)
     for r in kept:
