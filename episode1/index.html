@@ -55,6 +55,7 @@ addEventListener('visibilitychange',function(){if(document.visibilityState==='hi
   #cover .ch{font-size:26px;margin:10px 0 8px}
   #cover .cp{font-size:14px;color:#f0e6d6;opacity:.92;max-width:320px}
   #cover .cs{font-size:12px;color:var(--sub);margin-top:14px}
+  #playhint{display:none;font-size:12.5px;color:var(--amber-hi);margin-top:10px}
   #taptip{position:absolute;left:0;right:0;bottom:104px;text-align:center;font-size:12.5px;color:var(--amber-hi);display:none;animation:tp 1.4s ease-in-out infinite;text-shadow:0 1px 6px rgba(0,0,0,.85)}
   @keyframes tp{0%,100%{opacity:.35}50%{opacity:1}}
   #note{display:none;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px;font-size:15px}
@@ -81,6 +82,7 @@ addEventListener('visibilitychange',function(){if(document.visibilityState==='hi
       <div class="cp">A short K-drama scene. Tap any Korean line to see what it means — by the end, you'll understand it with the subtitles off.</div>
       <button class="btn" style="max-width:260px;margin:20px auto 0" onclick="startPlay()">▶ Play the scene</button>
       <div class="cs">🎧 sound on — headphones recommended</div>
+      <div id="playhint">Sound didn't start — tap ▶ once more.</div>
     </div>
   </div>
   <div class="hint">Tap the Korean line to see what it really means</div>
@@ -106,21 +108,40 @@ const sc=document.getElementById('script');
 LINES.forEach((l,i)=>{const r=document.createElement('div');r.className='row';r.id='r'+i;
   r.innerHTML=`<span class="w">${l.who}</span><span class="k">${l.ko}</span><span class="r">${l.rom}</span><span class="e">${l.en}</span>`;
   r.onclick=()=>{au.currentTime=l.start+0.01;startPlay();};sc.appendChild(r);});
-function startPlay(){var c=document.getElementById('cover');if(c)c.style.display='none';
+/* Playback recovery. In in-app webviews (TikTok, IG) au.play() can reject outright, or
+   resolve and never advance. startPlay has already hidden the cover and the play button by
+   then, so without this the user is stranded on a silent, dead screen. Any failure puts the
+   cover and button back so a second tap — which usually succeeds — is possible. */
+function playFailed(name,message){clearTimeout(window.__pw);
+  if(window.__audioOk||window.__failed)return;window.__failed=1;
+  var pb=document.getElementById('pb');pb.style.display='flex';pb.textContent='▶';
+  var c=document.getElementById('cover');if(c)c.style.display='';
+  var h=document.getElementById('playhint');if(h)h.style.display='block';
+  track('play_error',{name:name,message:String(message||'').slice(0,120)});}
+function startPlay(){window.__failed=0;
+  var c=document.getElementById('cover');if(c)c.style.display='none';
   document.getElementById('pb').style.display='none';document.getElementById('subs').style.visibility='visible';
   if(!window.__tapped)document.getElementById('taptip').style.display='block';
+  var h=document.getElementById('playhint');if(h)h.style.display='none';
   var pp=au.play();
-  if(pp&&pp.catch)pp.catch(function(err){track('play_error',{name:(err&&err.name)||'unknown',message:String((err&&err.message)||'').slice(0,120)});});
+  if(pp&&pp.catch)pp.catch(function(err){playFailed((err&&err.name)||'unknown',(err&&err.message)||'');});
+  clearTimeout(window.__pw);
+  window.__pw=setTimeout(function(){playFailed('stalled','no progress 2s after play()');},2000);
   if(!window.__played){window.__played=1;track('scene_play');}}
 function toggleNote(){noteOpen=!noteOpen;renderNote();
   if(noteOpen&&cur>=0){window.__tapped=1;var tt=document.getElementById('taptip');if(tt)tt.style.display='none';track('line_tap',{line:cur});}}
 function renderNote(){const n=document.getElementById('note');if(noteOpen&&cur>=0){n.innerHTML='<b>'+LINES[cur].ko+'</b> &nbsp;<span style="color:var(--sub)">'+LINES[cur].rom+'</span><br>'+LINES[cur].note;n.style.display='block';}else n.style.display='none';}
-au.addEventListener('timeupdate',()=>{const t=au.currentTime;document.getElementById('prog').style.width=(t/au.duration*100)+'%';
+au.addEventListener('timeupdate',()=>{const t=au.currentTime;
+  /* first real progress = audio is genuinely playing. scene_play only means "tapped". */
+  if(!window.__audioOk&&t>0.15){window.__audioOk=1;clearTimeout(window.__pw);
+    var h=document.getElementById('playhint');if(h)h.style.display='none';
+    track('scene_audio_ok',{ms:Date.now()-DK_T0});}
+  if(au.duration)document.getElementById('prog').style.width=(t/au.duration*100)+'%';
   let i=LINES.length-1;while(i>0&&t<LINES[i].start)i--;if(t<LINES[0].start)i=0;
   if(i!==cur){cur=i;document.getElementById('who').textContent=LINES[i].who;document.getElementById('ko').textContent=LINES[i].ko;document.getElementById('rom').textContent=LINES[i].rom;document.getElementById('en').textContent=LINES[i].en;
     document.querySelectorAll('.row').forEach((r,j)=>r.classList.toggle('on',j===i));renderNote();}});
 au.addEventListener('ended',onSceneComplete);
-au.addEventListener('error',function(){track('play_error',{name:'media_error',message:'code '+((au.error&&au.error.code)||'?')});});
+au.addEventListener('error',function(){playFailed('media_error','code '+((au.error&&au.error.code)||'?'));});
 function onSceneComplete(){document.getElementById('pb').style.display='flex';document.getElementById('pb').textContent='▶';
   if(!window.__done){window.__done=1;track('scene_complete');
     var b=document.getElementById('next-scene');b.style.display='block';
