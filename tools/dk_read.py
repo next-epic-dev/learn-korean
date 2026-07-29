@@ -25,7 +25,15 @@ ADVERTISER_ID = "7667402007149576213"
 DAILY_CAP_USD = 30.0
 
 # --- exclusion rules (from the loop brief) ---
-EXCLUDED_SESSION_IDS = {"mrw64tp7v313fh"}
+EXCLUDED_SESSION_IDS = {
+    "mrw64tp7v313fh",
+    # Loop 6's own headless verification loads of the round-2 landing URL (2026-07-29
+    # 09:44 UTC). That URL existed only inside an ad object created minutes earlier that
+    # had never delivered an impression, so no human could have reached it. They predate
+    # the DK_QA person_id tag, hence the hardcode; loads after that deploy self-exclude.
+    "ms5wesk52a0cjlox",
+    "ms5wevy75zyi9sd9",
+}
 TEST_PID_PREFIXES = ("PREVIEW", "ANCHTEST")
 
 FUNNEL = ["page_view", "scene_play", "scene_complete", "quiz_done",

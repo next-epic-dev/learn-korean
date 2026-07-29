@@ -5,7 +5,15 @@
    must fire before the inline media payload, or the funnel is blind to early exits. */
 const SUPABASE_URL="https://pjvjweurelmosugwptdl.supabase.co", SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBqdmp3ZXVyZWxtb3N1Z3dwdGRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQzNDQxODMsImV4cCI6MjA3OTkyMDE4M30.561J0c1dA0FeQ7Fc568xeVVPDvdUW_bW1BNb78gzIKk";
 const DK_T0=Date.now();
-const DK_PID=(new URLSearchParams(location.search).get('id')||'anon');
+/* QA/automation traffic must never look like a real visitor. Every loop verifies the live
+   page with a headless browser, and those loads land in the same table as paid traffic —
+   page_view + perf with no taps, i.e. a perfect fake bounce. Tag them with a PREVIEW-
+   prefixed person_id so the reader's existing exclusion rule drops the whole session.
+   navigator.webdriver catches CDP-driven browsers; ?dk_qa=1 is the explicit escape hatch
+   for any check that doesn't set it. Real visitors set neither. */
+const DK_QA=(function(){try{return navigator.webdriver===true
+  ||new URLSearchParams(location.search).get('dk_qa')==='1';}catch(e){return false;}})();
+const DK_PID=(DK_QA?'PREVIEW-QA-':'')+(new URLSearchParams(location.search).get('id')||'anon');
 /* One session = one page load, and the id must NEVER depend on storage. In-app webviews
    (TikTok, IG) can block localStorage; the old code then handed every blocked visitor the
    same literal id, collapsing all of them into one unusable session. A stored device id is
