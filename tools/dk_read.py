@@ -166,6 +166,45 @@ def report(rows, path=None):
         print(f"  !! {stale}/{len(pvs)} page_views are from a PRE-FIX build "
               f"(null meta) — exclude them before judging the funnel")
 
+    # Which build did each session actually see? Loops 6/10/11 each had to answer this by
+    # hand, with a different fragile proxy each time. Builds from loop 11 on stamp
+    # page_view.meta.b, so they self-identify. Older ones get a best-effort label from
+    # perf.kb -- and a cache hit reports kb 0, which is precisely the case a human eye
+    # misreads as "new build" right after a deploy. Never let two builds share a funnel:
+    # that is the loop 1-5 error (a broken build's zeros read as a hook problem).
+    build_of = {}
+    kb_of = {}
+    for r in kept:
+        if r.get("event") == "perf":
+            kb_of[r["session_id"]] = (r.get("meta") or {}).get("kb")
+    for r in pvs:
+        m = r.get("meta") or {}
+        sid = r["session_id"]
+        if m.get("b"):
+            build_of[sid] = m["b"]
+        else:
+            kb = kb_of.get(sid)
+            if m == {} or r.get("meta") is None:
+                build_of[sid] = "pre-fix(null meta)"
+            elif kb is None:
+                build_of[sid] = "untagged(unknown)"
+            elif kb >= 200:
+                build_of[sid] = "untagged(~700KB monolith)"
+            elif kb > 0:
+                build_of[sid] = "untagged(asset-split)"
+            else:
+                build_of[sid] = "untagged(kb0 cache hit — build UNKNOWN)"
+
+    if build_of:
+        tally = defaultdict(int)
+        for b in build_of.values():
+            tally[b] += 1
+        print("\n  builds seen: " + ", ".join(
+            f"{b}={n}" for b, n in sorted(tally.items(), key=lambda x: -x[1])))
+        if len(tally) > 1:
+            print("    !! MORE THAN ONE BUILD IN THIS WINDOW — do not judge the funnel on the")
+            print("       pooled number. Per-build funnels below; score only the current build.")
+
     print("\n--- FUNNEL (sessions reaching each step) ---")
     prev = None
     counts = {}
@@ -175,6 +214,24 @@ def report(rows, path=None):
         step = f"  {pct(n, prev)} of prev" if prev is not None else ""
         print(f"  {ev:<16} {n:>5}   {pct(n, total):>7} of all{step}")
         prev = n
+
+    # Per-build funnels. The pooled funnel above is only meaningful when one build is live;
+    # right after a deploy it is a blend, and the blend hides exactly the signal we deployed
+    # to measure.
+    tally = defaultdict(int)
+    for b in build_of.values():
+        tally[b] += 1
+    if len(tally) > 1:
+        for b, _n in sorted(tally.items(), key=lambda x: -x[1]):
+            bs = {s: evs for s, evs in sess.items() if build_of.get(s) == b}
+            bt = len(bs)
+            print(f"\n  -- build {b} ({bt} sessions) --")
+            bprev = None
+            for ev in FUNNEL:
+                n = sum(1 for evs in bs.values() if ev in evs)
+                step = f"  {pct(n, bprev)} of prev" if bprev is not None else ""
+                print(f"    {ev:<16} {n:>5}   {pct(n, bt):>7} of build{step}")
+                bprev = n
 
     # --- diagnostics that drive the next decision ---
     print("\n--- DIAGNOSTICS ---")
@@ -202,8 +259,18 @@ def report(rows, path=None):
         print(f"  dwell (sec, visible-time only) n={n} median={med}s "
               f"p90={secs[int(n*0.9)-1] if n else 0}s")
         print(f"  sessions under 3s: {under3}/{n} ({pct(under3, n)})")
-        if under3 > 0.6 * n:
+        # Only sessions that emitted a leave beacon land in `secs`. A session that is still
+        # open, or whose webview was killed before pagehide, contributes nothing -- so this
+        # bounce rate is computed on a subset, not on the funnel. Saying "the hook is the
+        # bottleneck" off 2 of 3 beacons out of 6 sessions is how a 3-sample artifact turns
+        # into a hook rewrite. Demand real coverage before the verdict is allowed to print.
+        cover = pct(n, total)
+        print(f"  dwell coverage: {n}/{total} sessions emitted a leave beacon ({cover})")
+        if under3 > 0.6 * n and n >= 20 and n >= 0.5 * total:
             print("    !! load/expectation mismatch -> first-screen hook is the bottleneck")
+        elif under3 > 0.6 * n:
+            print(f"    (short-dwell heavy, but n={n} of {total} — NOT a verdict; "
+                  f"needs n>=20 and >=50% coverage)")
         walls = [(r.get("meta") or {}).get("wall", 0) or 0 for r in lv]
         if walls and sum(walls) > 1.4 * sum(secs):
             print("    (note: wall >> sec = frequent app-switching, NOT abandonment)")
