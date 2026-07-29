@@ -13,7 +13,7 @@ const DK_T0=Date.now();
    same error that made loops 1-5 read a broken build's zeros as a hook problem. So the page
    states its own build, and the reader segments on it. Bump on every deploy that changes
    what a visitor experiences. */
-const DK_BUILD="2026-07-29-l12-s2";
+const DK_BUILD="2026-07-29-l13-s2";
 /* QA/automation traffic must never look like a real visitor. Every loop verifies the live
    page with a headless browser, and those loads land in the same table as paid traffic —
    page_view + perf with no taps, i.e. a perfect fake bounce. Tag them with a PREVIEW-
@@ -23,6 +23,25 @@ const DK_BUILD="2026-07-29-l12-s2";
 const DK_QA=(function(){try{return navigator.webdriver===true
   ||new URLSearchParams(location.search).get('dk_qa')==='1';}catch(e){return false;}})();
 const DK_PID=(DK_QA?'PREVIEW-QA-':'')+(new URLSearchParams(location.search).get('id')||'anon');
+/* DK_QA is necessary but NOT sufficient. On 07-29 four loads landed within 98s of a deploy
+   -- page_view + perf + scroll, no tap, tiktok.com referrer, the exact r2 ad URL -- on a day
+   TikTok reported 3 clicks TOTAL. They were not human, yet every one recorded person_id
+   'anon', because navigator.webdriver was false and nothing set ?dk_qa=1. An ad-review
+   crawler fetching the landing page is the obvious candidate, and we cannot make it identify
+   itself. So the page records WHAT KIND OF CLIENT loaded it and lets the reader judge.
+   Deliberately additive: these fields never change person_id and never drop a session.
+   A false 'bot' verdict would silently delete a real customer -- the one error worse than
+   counting a crawler, so classification stays in the reader where it can be argued with.
+   tz+tp are the sharpest pair: we buy US mobile only, so a real visitor is America/* with a
+   touchscreen, while datacenter automation is typically UTC with maxTouchPoints 0. */
+const DK_CLI=(function(){var o={};try{
+  o.tz=(Intl.DateTimeFormat().resolvedOptions().timeZone||'').slice(0,32);
+  o.tp=navigator.maxTouchPoints;o.hc=navigator.hardwareConcurrency;
+  o.lg=(navigator.language||'').slice(0,8);
+  o.sw=screen.width;o.sh=screen.height;o.dpr=Math.round((devicePixelRatio||0)*100)/100;
+  o.wd=navigator.webdriver===true?1:0;
+  o.ua=(navigator.userAgent||'').slice(0,120);
+}catch(e){}return o;})();
 /* One session = one page load, and the id must NEVER depend on storage. In-app webviews
    (TikTok, IG) can block localStorage; the old code then handed every blocked visitor the
    same literal id, collapsing all of them into one unusable session. A stored device id is
@@ -33,7 +52,7 @@ const DK_DEV=(function(){try{var d=localStorage.getItem('dk_did');if(d)return{id
 }catch(e){return{id:null,repeat:0};}})();
 const DK_UTM=(function(){const p=new URLSearchParams(location.search);return{utm_source:p.get('utm_source'),utm_medium:p.get('utm_medium'),utm_campaign:p.get('utm_campaign'),utm_content:p.get('utm_content'),referrer:(document.referrer||null)};})();
 function track(event,meta){try{fetch(SUPABASE_URL+'/rest/v1/dk_events',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json',apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,Prefer:'return=minimal'},body:JSON.stringify(Object.assign({session_id:DK_SID,person_id:DK_PID,event:event,path:location.pathname,meta:(meta||null)},DK_UTM))});}catch(e){}}
-track('page_view',{did:DK_DEV.id,repeat:DK_DEV.repeat,store:DK_DEV.id?1:0,b:DK_BUILD});
+track('page_view',{did:DK_DEV.id,repeat:DK_DEV.repeat,store:DK_DEV.id?1:0,b:DK_BUILD,c:DK_CLI});
 
 /* The cover and its ▶ button paint at ~9KB, but the real startPlay() is defined further
    down the document. On a slow link that leaves a window where the button is visible and

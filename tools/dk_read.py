@@ -122,6 +122,55 @@ def latest_leaves(rows):
     return list(best.values())
 
 
+def client_audit(kept, sess):
+    """Report which sessions look non-human, and NEVER drop one.
+
+    We buy US mobile placement only, so a real visitor is an America/* timezone with a
+    touchscreen. Datacenter automation is typically UTC (or an Asia zone) with
+    maxTouchPoints 0. On 07-29 four loads inside 98s of a deploy carried the exact r2 ad URL
+    on a day TikTok reported 3 clicks total -- almost certainly an ad-review crawler -- yet
+    they were indistinguishable from real bouncers, which is the same illusion that burned
+    loops 1-5. Hence: label loudly, subtract nothing. A wrong 'bot' call silently deletes a
+    paying customer, so the verdict stays here where a human can overrule it, not in the
+    page's person_id where it would erase the row.
+    """
+    pvs = [r for r in kept if r.get("event") == "page_view"]
+    tagged = [r for r in pvs if (r.get("meta") or {}).get("c")]
+    if not tagged:
+        if pvs:
+            print(f"  client fingerprint: 0/{len(pvs)} page_views tagged "
+                  f"(pre-l13 build — cannot tell crawler from customer)")
+        return
+
+    susp = []
+    for r in tagged:
+        c = (r.get("meta") or {}).get("c") or {}
+        tz, tp, wd = c.get("tz") or "", c.get("tp"), c.get("wd")
+        why = []
+        if wd == 1:
+            why.append("webdriver")
+        if tz and not tz.startswith("America/"):
+            why.append(f"tz={tz}")
+        if tp == 0:
+            why.append("no-touch")
+        if why:
+            susp.append((r.get("session_id"), ",".join(why)))
+
+    tz_tally = defaultdict(int)
+    for r in tagged:
+        tz_tally[((r.get("meta") or {}).get("c") or {}).get("tz") or "?"] += 1
+    print(f"  client fingerprint: {len(tagged)}/{len(pvs)} page_views tagged")
+    print("    timezones: " + ", ".join(
+        f"{t}={n}" for t, n in sorted(tz_tally.items(), key=lambda x: -x[1])[:6]))
+    print(f"    suspected non-human: {len(susp)}/{len(tagged)} "
+          f"(NOT excluded — judge, then decide)")
+    for sid, why in susp[:8]:
+        print(f"      {sid}  {why}")
+    if susp and len(susp) >= 0.5 * len(tagged):
+        print("    !! half or more of this window is non-human — the funnel below is NOT a")
+        print("       verdict on the product. Re-read it against human sessions only.")
+
+
 def pct(a, b):
     return f"{(100.0*a/b):.1f}%" if b else "n/a"
 
@@ -240,6 +289,8 @@ def report(rows, path=None):
     # --- diagnostics that drive the next decision ---
     print("\n--- DIAGNOSTICS ---")
     pv = counts["page_view"]
+
+    client_audit(kept, sess)
 
     store0 = sum(1 for r in kept if r.get("event") == "page_view"
                  and (r.get("meta") or {}).get("store") == 0)
