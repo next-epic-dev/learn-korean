@@ -223,6 +223,48 @@ def arrival_audit(kept, sess):
         print("      " + ", ".join(zero_wire[:8]))
 
 
+def poster_audit(kept, leaves):
+    """Did the poster art reach the screen before the visitor left?
+
+    Loop 17 fixed the dead play path; the next cohort tapped nothing and left in 2-3s.
+    'The hook failed' and 'the hook was never on screen' look identical in the funnel and
+    call for opposite fixes, so l18 records when cover.jpg finished (meta.art, ms from
+    nav) alongside the visible dwell already in meta.sec. This only reports; it never
+    drops a session -- same rule as client_audit and arrival_audit.
+    """
+    art = {}
+    for r in kept:
+        if r.get("event") not in ("perf", "leave"):
+            continue
+        m = r.get("meta") or {}
+        if "art" not in m:
+            continue                     # pre-l18 row: no opinion, not a zero
+        sid, v = r.get("session_id"), m.get("art") or 0
+        if sid not in art or v > art[sid]:
+            art[sid] = v
+    if not art:
+        print("  poster paint: 0 sessions instrumented (pre-l18) — cannot tell a failed "
+              "hook from an unseen one")
+        return
+    secs = {r.get("session_id"): ((r.get("meta") or {}).get("sec") or 0) for r in leaves}
+    never = [s for s, v in art.items() if not v]
+    late = [s for s, v in art.items() if v and s in secs and v > secs[s] * 1000]
+    vals = sorted(v for v in art.values() if v)
+    med = vals[len(vals) // 2] if vals else 0
+    print(f"  poster paint: {len(art)} sessions instrumented (l18+), "
+          f"cover.jpg median {med}ms")
+    if never:
+        print(f"    never painted: {len(never)} — {', '.join(never[:6])}")
+    if late:
+        print(f"    left BEFORE the art painted: {len(late)} — {', '.join(late[:6])}")
+    unseen = len(never) + len(late)
+    if unseen > 0.4 * len(art) and len(art) >= 10:
+        print("    !! a large share never saw the hook -> the fix is image weight, "
+              "NOT the copy")
+    elif unseen:
+        print(f"    ({unseen}/{len(art)} never saw the hook — needs n>=10 for a verdict)")
+
+
 def pct(a, b):
     return f"{(100.0*a/b):.1f}%" if b else "n/a"
 
@@ -382,6 +424,8 @@ def report(rows, path=None):
         walls = [(r.get("meta") or {}).get("wall", 0) or 0 for r in lv]
         if walls and sum(walls) > 1.4 * sum(secs):
             print("    (note: wall >> sec = frequent app-switching, NOT abandonment)")
+
+    poster_audit(kept, lv)
 
     ov, cc = counts["offer_view"], counts["checkout_click"]
     print(f"  offer_view {ov} -> checkout_click {cc} ({pct(cc, ov)})")
