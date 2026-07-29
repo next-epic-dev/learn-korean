@@ -2,6 +2,108 @@
 
 ---
 
+## 2026-07-29 12:20 UTC — 루프 9
+
+**라운드2 집행 시작(노출 8). 그리고 `scene_play = 0`의 진범을 드디어 잡았다 —
+훅도, 오디오 차단도, 페이지 무게도 아니었다. 재생 버튼이 문자 그대로 죽어 있었다.**
+
+### 데이터 스냅샷
+- 연결: supabase 200, tiktok 200 (이번 환경은 3개 호스트 모두 열림)
+- 틱톡 오늘(07-29, acct tz UTC-5) DramaKorean 지출 **$0.00 / 캡 $30** — 위반 없음
+  워터마크 `07:00 acct` vs `acct now 07:16` → **~0.3h 지연, 0을 0으로 읽어도 됨**
+- **라운드2 집행 개시**: 광고그룹 `1872041858734178` DELIVERY_OK,
+  노출 **8** (06:00 acct 7건 / 07:00 acct 1건), 클릭 0, 지출 $0.00
+- 루프 8 이후 **실사용 세션 2** (11:42Z, 11:51Z) — 둘 다 tiktok.com 리퍼러, QA 아님
+  - `ms60m0zlt2` utm=`dramakorean_ep1`(라운드1 잔여): perf kb=0/ttfb=0(캐시), **2초 만에 이탈**,
+    `stage-scene`, `played=0`, `max_scroll=0`
+  - `ms60y9ab0n` utm=`dramakorean_ep1_r2` — **라운드2 첫 착지**: ttfb 1257ms, load 2461ms,
+    kb 466, 4.2초에 scroll, **scene_play 없음**
+- 규율: 신규 실사용 세션 2 (<30) → 가격·타겟·훅 **변경 없음**. 사전 확약 규칙도 준수
+  (노출이 붙기 시작했으므로 **타겟 확장 금지** — 광고 오브젝트 무손질)
+
+### 🔑 이번 루프의 발견 — 버튼은 보이는데, 누르면 아무 일도 안 일어난다
+루프 1~8은 `scene_play 0`(라운드1 249세션 전부)을 훅 불일치·인앱 오디오 차단·페이지
+무게로 번갈아 설명했다. 전부 틀렸다. 배포된 단일 HTML(699,216B)의 **바이트 배치**가 범인이다.
+
+| | 바이트 위치 |
+|---|---|
+| head 안 `#player{background-image:url(data:image/jpeg;base64,…)}` | **186KB 덩어리** |
+| `</head>` | 194,733 |
+| 커버 마크업 + "▶ Play the scene" 버튼 | 194,756 |
+| `<audio id="au" src="data:audio/mpeg;base64,…">` | 196,203 → 596,432 (**400KB**) |
+| **`function startPlay`** | **600,395** |
+
+HTML 파서는 순차적이다. `<head>`에 186KB 이미지가 박혀 있어 **~196KB를 받기 전엔 아무것도
+그려지지 않고**, 그 뒤 400KB 오디오가 스크립트 앞을 막아 **`startPlay()`는 ~600KB까지
+정의되지 않는다.** 그런데 커버와 재생 버튼은 196KB에서 이미 그려진다.
+
+→ **사용자가 버튼을 보고 누를 수 있지만, 핸들러가 없어서 아무 일도 안 일어나는 창이
+~2.7초간 존재한다.** `onclick="startPlay()"`가 ReferenceError로 조용히 죽는다.
+
+**스로틀 재현(1.2Mbps/150ms, iPhone TikTok webview UA, 배포본 그대로):**
+```
+BEFORE  tap@1500ms : coverVisible=true, btnText="▶ Play the scene", startPlayDefined=FALSE
+        tap result : clicked  →  played=false
+        events     : page_view, first_tap        ← scene_play 없음
+```
+`first_tap`은 찍히는데 `scene_play`는 안 찍힌다. **라운드1 249세션 0 scene_play의 서명과 정확히 일치한다.**
+이건 훅 문제가 아니라 배송 순서 버그였고, 광고를 아무리 고쳐도 절대 안 나아졌을 것이다.
+
+### 결정과 근거
+**액션 = 페이지 위생 수리 1건(배송 순서). 광고·가격·타겟·문구 전부 무변경.**
+n=2로는 어떤 제품 변수도 못 건드린다(규율). 하지만 이건 변수 실험이 아니라 **깨진 것의 수리**다.
+그리고 이걸 고치기 전까지는 다른 어떤 실험도 무의미하다 — 퍼널 2단계가 물리적으로 도달 불가였다.
+
+### 실행 내용 (커밋 `d8ff4a5`, `episode1/index.html` 1파일)
+1. **186KB head 이미지 → body 끝 `<style>`로 이동.** 기본 규칙의 `background:#000`이
+   폴백이라 커버는 검은 배경으로 즉시 그려지고 사진은 나중에 채워진다.
+2. **400KB 인라인 오디오 → body 끝 스크립트에서 `au.src` 할당.** 태그는
+   `<audio id="au" preload="none">`로 제자리 유지(스크립트의 `getElementById('au')` 보호).
+3. **이른 탭 큐잉(신규 실패모드 차단).** 1·2번만 하면 오디오 도착 전 탭이
+   playFailed 워치독(2초)에 걸려 "Sound didn't start"가 뜬다. `startPlay()` 진입 시
+   `au.src`가 비어 있으면 `__wantPlay`를 세우고 "Loading the scene…"만 띄운 뒤 리턴,
+   로더가 src를 붙이는 즉시 자동 재생. **`scene_play`는 `{pending:1}`로 그대로 기록** —
+   이른 탭이야말로 우리가 봐야 할 신호다. `playFailed`는 자기 문구를 복원하도록 수정.
+
+| | 이전 | 이후 |
+|---|---|---|
+| 커버가 그려지는 시점 | ~196,000B | **8,819B** (22×) |
+| `startPlay` 정의 시점 | ~600,395B | **13,962B** (43×) |
+| `function track` | 2,331B | **2,331B (무변경)** |
+
+**검증**
+- 스크립트 3블록 전부 `node --check` 통과
+- 스로틀 재현 tap@1000/1500/3000ms **모두**:
+  `page_view → first_tap → scene_play → scene_audio_ok`, `played=true, failed=false`
+- 전체 퍼널 E2E: `page_view→perf→first_tap→scene_play→scene_audio_ok→line_tap→
+  scene_complete→quiz_done→teaser_view→offer_view`, 오퍼 `$49` / `goCheckout()` 그대로,
+  배경 이미지 정상 적용, 웜 구조(첫 화면 비판매) 유지
+- **계측 안전**: 라이브 재확인 — `function track`@2331, `rest/v1/dk_events`@2383 살아있음.
+  라이브 바이트 = 로컬 테스트 파일 **md5 동일**(`425f5db8…`, 699,878B)
+- **자가 오염 0**: 모든 헤드리스 로드는 `?dk_qa=1`(→ person_id `PREVIEW-QA-`) **그리고**
+  supabase 라우트 `abort()` — dk_events에 이번 루프가 남긴 행 없음
+
+### 다음 루프 제안
+1. `python3 tools/dk_read.py --spend` → 워터마크 경고 먼저, $30 초과면 `1872041858734178` 정지.
+2. **이번 수정의 판정 기준(사전 확약)**: 배포(12:20 UTC) **이후** 착지 세션만 볼 것.
+   - `scene_play/page_view`가 여전히 **0/n (n≥20)** 이면 → 배송 순서는 범인이 아니었다.
+     그때 비로소 훅 문구/첫 화면 국면으로 넘어간다.
+   - `scene_play`는 붙는데 `scene_audio_ok`가 현저히 낮으면 → 인앱 오디오 차단이 진짜다
+     → **무음 자막 우선 모드** 검토. `meta.pending=1` 비율도 함께 볼 것(느린 회선 비중).
+   - `offer_view` 도달 후 `checkout_click` 0 (n≥20)이면 → 그때 $29.
+3. **라운드2 집행 속도 감시(새 확약).** 루프 8의 규칙은 "0이냐 아니냐"만 정해서
+   "집행은 되는데 시간당 4노출"이라는 지금 상태를 못 다룬다. 보완:
+   **집행 창(07-30 09:43 UTC 종료)에서 미국 프라임(17:00–22:00 acct)을 한 번 지난 뒤에도
+   누적 노출 < 300이면** → 최소 확장 1회: `interest_keyword_ids` 5개 제거 또는 interest
+   **category**로 완화. **`PLACEMENT_TIKTOK` 단독·연령 25-54·미국은 유지.** 한 번에 한 변수.
+   프라임을 지나기 전에는 확장 금지(지금 8노출은 06~07 acct = 미국 새벽, 가장 얇은 시간대).
+4. 남은 무게: 오디오 400KB + 배경 186KB + 리워드 89KB = 675KB가 여전히 한 파일이다.
+   이제 **인터랙션은 안 막지만** 데이터 요금/완료율에는 남아 있다. 급하지 않음 —
+   이번 수정의 효과를 먼저 측정하고, 변수 하나만 바꾸는 규율을 지킬 것.
+5. 규율 유지: 신규 실사용 세션 30 미만이면 큰 변수 금지. 루프당 의미 있는 변경 1개.
+
+---
+
 ## 2026-07-29 11:10 UTC — 루프 8
 
 **라운드2 심사 통과(DELIVERY_OK). 그런데 승인 30분이 지나도록 노출 0이다.
