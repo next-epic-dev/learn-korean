@@ -279,6 +279,72 @@ def boot_audit(kept, build_of):
               "not running. Check boot.js is served (200) before trusting any patch in it.")
 
 
+TAP_FIXED = 17   # first build where tapping the poster/line actually starts the scene
+
+
+def dwell_cohorts(leaves, build_of):
+    """Split dwell by whether the build could reach scene_play at all.
+
+    The verdict this feeds -- "the first-screen hook is the bottleneck" -- is the gate for the
+    next big variable, so it has to be earned on visitors who could actually get past the
+    first screen. Before l17 the tap was dead: a visitor who arrived, tapped, got nothing and
+    left is indistinguishable in `sec` from one the hook never caught. Pooling the two lets a
+    broken build vote on a copy decision.
+
+    Untagged builds get their own bucket and are never counted as tap-fixed -- an unknown
+    build is unknown, not healthy. Same rule as the poster cohorts: the label carries the
+    uncertainty, so the next misread cannot grow inside it. No row is dropped (loop 13).
+    """
+    buckets = {"tap-fixed (l%d+)" % TAP_FIXED: [], "dead-tap (pre-l%d)" % TAP_FIXED: [],
+               "build UNKNOWN (untagged)": []}
+    for r in leaves:
+        sec = (r.get("meta") or {}).get("sec", 0) or 0
+        b = build_of.get(r.get("session_id"))
+        ln = loop_no(b)
+        if ln >= TAP_FIXED:
+            buckets["tap-fixed (l%d+)" % TAP_FIXED].append(sec)
+        elif ln > 0:
+            buckets["dead-tap (pre-l%d)" % TAP_FIXED].append(sec)
+        else:
+            buckets["build UNKNOWN (untagged)"].append(sec)
+
+    # Cohort sizes over ALL sessions, not just the ones that beaconed: coverage inside a
+    # cohort is what says whether that cohort's median is worth anything.
+    sizes = defaultdict(int)
+    for b in build_of.values():
+        ln = loop_no(b)
+        key = ("tap-fixed (l%d+)" % TAP_FIXED if ln >= TAP_FIXED else
+               "dead-tap (pre-l%d)" % TAP_FIXED if ln > 0 else "build UNKNOWN (untagged)")
+        sizes[key] += 1
+
+    print(f"    -- by build cohort (scene_play is physically possible only from "
+          f"l{TAP_FIXED} on) --")
+    for name, vals in buckets.items():
+        if not vals and not sizes.get(name):
+            continue
+        cn = len(vals)
+        if not cn:
+            print(f"    {name:26s} n=0 of {sizes.get(name, 0)} sessions — no beacons")
+            continue
+        v = sorted(vals)
+        u3 = sum(1 for s in v if s < 3)
+        print(f"    {name:26s} n={cn:3d} median={v[cn // 2]}s p90={v[int(cn * 0.9) - 1]}s  "
+              f"under 3s: {u3}/{cn} ({pct(u3, cn)})  coverage {pct(cn, sizes.get(name, cn))}")
+
+    key = "tap-fixed (l%d+)" % TAP_FIXED
+    v, tot = buckets[key], sizes.get(key, 0)
+    cn = len(v)
+    u3 = sum(1 for s in v if s < 3)
+    if cn and u3 > 0.6 * cn and cn >= 20 and cn >= 0.5 * tot:
+        print("    !! load/expectation mismatch -> first-screen hook is the bottleneck")
+        print(f"       (earned on {cn} tap-fixed sessions — a build that COULD have played)")
+    elif cn and u3 > 0.6 * cn:
+        print(f"    (short-dwell heavy on the tap-fixed cohort, but n={cn} of {tot} — "
+              f"NOT a verdict; needs n>=20 and >=50% coverage)")
+    elif not cn:
+        print("    (no tap-fixed beacons yet — the hook verdict has nothing to stand on)")
+
+
 def poster_audit(kept, leaves):
     """Did the poster art reach the screen before the visitor left?
 
@@ -516,8 +582,13 @@ def report(rows, path=None):
         n = len(secs)
         med = secs[n // 2]
         under3 = sum(1 for s in secs if s < 3)
+        # POOLED, and that word is load-bearing. The verdict this block renders is about the
+        # first-screen hook, but a build where tapping is dead (pre-l17) cannot separate
+        # "the hook did not land" from "the page did not work" -- and on 07-29 that build was
+        # 65% of the beacons. Same disease loop 24 found in poster paint: a median dragged by
+        # a structurally different population, feeding the gate for the next big action.
         print(f"  dwell (sec, visible-time only) n={n} median={med}s "
-              f"p90={secs[int(n*0.9)-1] if n else 0}s")
+              f"p90={secs[int(n*0.9)-1] if n else 0}s  POOLED — read the split, not this number")
         print(f"  sessions under 3s: {under3}/{n} ({pct(under3, n)})")
         # Only sessions that emitted a leave beacon land in `secs`. A session that is still
         # open, or whose webview was killed before pagehide, contributes nothing -- so this
@@ -526,11 +597,7 @@ def report(rows, path=None):
         # into a hook rewrite. Demand real coverage before the verdict is allowed to print.
         cover = pct(n, total)
         print(f"  dwell coverage: {n}/{total} sessions emitted a leave beacon ({cover})")
-        if under3 > 0.6 * n and n >= 20 and n >= 0.5 * total:
-            print("    !! load/expectation mismatch -> first-screen hook is the bottleneck")
-        elif under3 > 0.6 * n:
-            print(f"    (short-dwell heavy, but n={n} of {total} — NOT a verdict; "
-                  f"needs n>=20 and >=50% coverage)")
+        dwell_cohorts(lv, build_of)
         walls = [(r.get("meta") or {}).get("wall", 0) or 0 for r in lv]
         if walls and sum(walls) > 1.4 * sum(secs):
             print("    (note: wall >> sec = frequent app-switching, NOT abandonment)")
