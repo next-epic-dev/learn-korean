@@ -155,6 +155,11 @@
 11. **r3 광고는 아직 `/s2/`를 가리킨다.** 켤 일이 생기면 **먼저 경로부터** — 수정이 아니라
     **신규 광고 생성**이어야 한다(루프 22 발견 2)
 12. 규율 유지: 신규 사람 세션 30 미만이면 큰 변수 금지. 루프당 의미 있는 변경 1개
+13. **⚙ 운영 메모 — `git push -u origin master`가 이 환경에서 실패한다.** 원격 tip이
+    내 부모 커밋과 **정확히 같은데도** `non-fast-forward`로 거절된다(4회 재시도 전부 실패,
+    `git ls-remote`와 GitHub API 양쪽으로 divergence 없음을 확인). **`git push origin
+    HEAD:refs/heads/master`(명시적 refspec)는 즉시 성공한다.** 다음 루프는 처음부터
+    이 형태를 쓸 것 — force 계열은 필요 없다
 
 ---
 
