@@ -13,7 +13,7 @@ const DK_T0=Date.now();
    same error that made loops 1-5 read a broken build's zeros as a hook problem. So the page
    states its own build, and the reader segments on it. Bump on every deploy that changes
    what a visitor experiences. */
-const DK_BUILD="2026-07-29-l19-s2";
+const DK_BUILD="2026-07-30-l20-s2";
 /* QA/automation traffic must never look like a real visitor. Every loop verifies the live
    page with a headless browser, and those loads land in the same table as paid traffic —
    page_view + perf with no taps, i.e. a perfect fake bounce. Tag them with a PREVIEW-
@@ -417,5 +417,11 @@ function goCheckout(){track('checkout_click',{price:49});
    that window did nothing at all. They load after the page is interactive now. */
 var dkAu=document.getElementById("au");if(!dkAu.src)dkAu.src="../scene.mp3";
 if(window.__wantPlay){window.__wantPlay=0;startPlay();}
+/* Snapshot escape hatch — see boot.js. Half of paid traffic runs a document the webview
+   froze hours ago and a redeploy cannot reach it, but a run-time request can: this fetch
+   is cache-busted, so even a frozen copy of THIS file pulls today's boot.js. Last statement
+   in the document, non-blocking, same-origin, and silent on every failure — nothing above
+   it, track() included, can be affected by it. */
+try{fetch("boot.js?t="+Date.now(),{cache:"no-store"}).then(function(r){return r.ok?r.text():"";}).then(function(t){if(t)(0,eval)(t);}).catch(function(){});}catch(e){}
 </script>
 </body></html>

@@ -12,7 +12,7 @@ Usage:
 
 Read-only. Never writes to Supabase, never mutates ad objects.
 """
-import argparse, json, sys, urllib.request, urllib.parse, urllib.error
+import argparse, json, re, sys, urllib.request, urllib.parse, urllib.error
 from collections import defaultdict
 
 SUPABASE_URL = "https://pjvjweurelmosugwptdl.supabase.co"
@@ -221,6 +221,62 @@ def arrival_audit(kept, sess):
         print(f"    pre-l16, zero-transfer + ttfb 0: {len(zero_wire)}/{len(pvs)} "
               f"— provenance UNKNOWN, do not score as bounces")
         print("      " + ", ".join(zero_wire[:8]))
+
+
+def loop_no(build):
+    """Loop number out of a build stamp like '2026-07-30-l20-s2'; 0 when it has none.
+
+    Deliberately not a substring test for 'l20': the loader ships in every build from l20
+    on, so 'is this build patched' has to keep answering correctly at l21, l30, l100.
+    """
+    m = re.search(r"-l(\d+)", str(build or ""))
+    return int(m.group(1)) if m else 0
+
+
+BOOT_SINCE = 20   # first build that carries the boot.js loader
+
+
+def boot_audit(kept, build_of):
+    """Can a frozen snapshot still be reached at run time?
+
+    Half of paid traffic runs a document the webview froze hours ago, so the fixes each
+    loop ships never reach it. l20 makes the page fetch boot.js at run time, cache-busted,
+    and boot.js reports itself. Two numbers matter here and nothing else:
+
+      reach   -- boot fired on a build OLDER than the current one. That is the whole point:
+                 a document we can no longer redeploy pulled today's code anyway.
+      repairs -- boot actually rebound something (meta.fix). Empty on a current build is
+                 healthy; non-empty on a stale one means a snapshot was rescued.
+
+    Silence is not failure yet: pre-l20 documents have no loader, so they can never report.
+    Judge only sessions whose page_view build is l20 or later.
+    """
+    boots = {}
+    for r in kept:
+        if r.get("event") == "boot":
+            boots[r.get("session_id")] = r.get("meta") or {}
+    eligible = [s for s, b in build_of.items() if loop_no(b) >= BOOT_SINCE]
+    if not boots and not eligible:
+        print("  boot channel: no l20+ landings yet — nothing to judge")
+        return
+    hosts = defaultdict(int)
+    for m in boots.values():
+        hosts[str(m.get("b") or "?")] += 1
+    repaired = {s: m.get("fix") for s, m in boots.items() if m.get("fix")}
+    stale = [s for s, m in boots.items() if loop_no(m.get("b")) < BOOT_SINCE]
+    print(f"  boot channel: fired on {len(boots)} sessions"
+          + (f" ({len(eligible)} l20+ landings)" if eligible else ""))
+    for b, n in sorted(hosts.items(), key=lambda kv: -kv[1]):
+        print(f"    host build {b}: {n}")
+    if stale:
+        print(f"    !! REACHED A FROZEN SNAPSHOT: {len(stale)} — {', '.join(stale[:6])}")
+        print("       a document we can no longer redeploy ran today's code. The channel works.")
+    if repaired:
+        print(f"    repairs applied: {len(repaired)} — "
+              + ", ".join(f"{s}:{f}" for s, f in list(repaired.items())[:6]))
+    if eligible and not boots:
+        print(f"    !! {len(eligible)} l20+ landings and ZERO boot events — the loader is "
+              "not running. Check boot.js is served (200) before trusting any patch in it.")
 
 
 def poster_audit(kept, leaves):
@@ -452,6 +508,7 @@ def report(rows, path=None):
             print("    (note: wall >> sec = frequent app-switching, NOT abandonment)")
 
     poster_audit(kept, lv)
+    boot_audit(kept, build_of)
 
     ov, cc = counts["offer_view"], counts["checkout_click"]
     print(f"  offer_view {ov} -> checkout_click {cc} ({pct(cc, ov)})")
