@@ -1,0 +1,432 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<script>
+/* DramaKorean instrumentation — MUST stay at the top of <head>: page_view and perf
+   must fire before the inline media payload, or the funnel is blind to early exits. */
+const SUPABASE_URL="https://pjvjweurelmosugwptdl.supabase.co", SUPABASE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBqdmp3ZXVyZWxtb3N1Z3dwdGRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQzNDQxODMsImV4cCI6MjA3OTkyMDE4M30.561J0c1dA0FeQ7Fc568xeVVPDvdUW_bW1BNb78gzIKk";
+const DK_T0=Date.now();
+/* Which build did this visitor actually see? Three loops in a row have had to answer that
+   by proxy — session-id length, null meta, then perf.kb (700KB build ≈466, asset-split
+   build ≈26) — and every proxy is fragile. perf.kb is 0 on a cache hit, so a cached load of
+   the OLD build is indistinguishable from a new one exactly when it matters most: the first
+   hours after a deploy, when live traffic is a MIX of both. Pooling those two cohorts is the
+   same error that made loops 1-5 read a broken build's zeros as a hook problem. So the page
+   states its own build, and the reader segments on it. Bump on every deploy that changes
+   what a visitor experiences. */
+const DK_BUILD="2026-07-30-l22-s3";
+/* QA/automation traffic must never look like a real visitor. Every loop verifies the live
+   page with a headless browser, and those loads land in the same table as paid traffic —
+   page_view + perf with no taps, i.e. a perfect fake bounce. Tag them with a PREVIEW-
+   prefixed person_id so the reader's existing exclusion rule drops the whole session.
+   navigator.webdriver catches CDP-driven browsers; ?dk_qa=1 is the explicit escape hatch
+   for any check that doesn't set it. Real visitors set neither. */
+const DK_QA=(function(){try{return navigator.webdriver===true
+  ||new URLSearchParams(location.search).get('dk_qa')==='1';}catch(e){return false;}})();
+const DK_PID=(DK_QA?'PREVIEW-QA-':'')+(new URLSearchParams(location.search).get('id')||'anon');
+/* DK_QA is necessary but NOT sufficient. On 07-29 four loads landed within 98s of a deploy
+   -- page_view + perf + scroll, no tap, tiktok.com referrer, the exact r2 ad URL -- on a day
+   TikTok reported 3 clicks TOTAL. They were not human, yet every one recorded person_id
+   'anon', because navigator.webdriver was false and nothing set ?dk_qa=1. An ad-review
+   crawler fetching the landing page is the obvious candidate, and we cannot make it identify
+   itself. So the page records WHAT KIND OF CLIENT loaded it and lets the reader judge.
+   Deliberately additive: these fields never change person_id and never drop a session.
+   A false 'bot' verdict would silently delete a real customer -- the one error worse than
+   counting a crawler, so classification stays in the reader where it can be argued with.
+   tz+tp are the sharpest pair: we buy US mobile only, so a real visitor is America/* with a
+   touchscreen, while datacenter automation is typically UTC with maxTouchPoints 0. */
+const DK_CLI=(function(){var o={};try{
+  o.tz=(Intl.DateTimeFormat().resolvedOptions().timeZone||'').slice(0,32);
+  o.tp=navigator.maxTouchPoints;o.hc=navigator.hardwareConcurrency;
+  o.lg=(navigator.language||'').slice(0,8);
+  o.sw=screen.width;o.sh=screen.height;o.dpr=Math.round((devicePixelRatio||0)*100)/100;
+  o.wd=navigator.webdriver===true?1:0;
+  o.ua=(navigator.userAgent||'').slice(0,120);
+}catch(e){}return o;})();
+/* One session = one page load, and the id must NEVER depend on storage. In-app webviews
+   (TikTok, IG) can block localStorage; the old code then handed every blocked visitor the
+   same literal id, collapsing all of them into one unusable session. A stored device id is
+   kept separately, best-effort, so repeat visits are still countable. */
+const DK_SID=Date.now().toString(36)+Math.random().toString(36).slice(2,10);
+const DK_DEV=(function(){try{var d=localStorage.getItem('dk_did');if(d)return{id:d,repeat:1};
+  d=Date.now().toString(36)+Math.random().toString(36).slice(2,8);localStorage.setItem('dk_did',d);return{id:d,repeat:0};
+}catch(e){return{id:null,repeat:0};}})();
+const DK_UTM=(function(){const p=new URLSearchParams(location.search);return{utm_source:p.get('utm_source'),utm_medium:p.get('utm_medium'),utm_campaign:p.get('utm_campaign'),utm_content:p.get('utm_content'),referrer:(document.referrer||null)};})();
+function track(event,meta){try{fetch(SUPABASE_URL+'/rest/v1/dk_events',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json',apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,Prefer:'return=minimal'},body:JSON.stringify(Object.assign({session_id:DK_SID,person_id:DK_PID,event:event,path:location.pathname,meta:(meta||null)},DK_UTM))});}catch(e){}}
+/* Was anyone actually LOOKING when this page_view fired? The script runs at parse time, and
+   a document the webview fetched on its own -- prefetch, prerender, background warm-up --
+   parses exactly like a real arrival: same page_view, same perf, no taps. On 07-29 eight
+   fresh US devices landed with transferSize 0 AND responseStart 0 (a document that crossed
+   no network) while TikTok reported FEWER clicks than we recorded landings. A load nobody
+   saw is not a bounce, but it is shaped like one, and reading it as one would put the third
+   false 'nobody engages' verdict on the board. So the page states its own visibility. */
+track('page_view',{did:DK_DEV.id,repeat:DK_DEV.repeat,store:DK_DEV.id?1:0,b:DK_BUILD,c:DK_CLI,
+  vs:(function(){try{return document.visibilityState;}catch(e){return null;}})(),
+  pr:(function(){try{return document.prerendering?1:0;}catch(e){return null;}})()});
+
+/* The cover and its ▶ button paint at ~9KB, but the real startPlay() is defined further
+   down the document. On a slow link that leaves a window where the button is visible and
+   inert — onclick="startPlay()" throws ReferenceError and the tap is lost. This stub owns
+   that window: it records the tap and arms __wantPlay, and the loader starts playback the
+   moment the player code lands. The later function declaration replaces it. */
+function startPlay(){window.__wantPlay=1;
+  if(!window.__played){window.__played=1;track('scene_play',{pending:1});}
+  var pl=document.getElementById('playhint');
+  if(pl){pl.textContent='Loading the scene…';pl.style.display='block';}}
+
+/* `sec` used to start its clock at parse time, which quietly assumed the document was on
+   screen the moment it parsed. A prefetched or prerendered load breaks that assumption in
+   the worst direction: it reports 1-2 seconds of "visible time" for a page no human ever
+   saw. Now the clock only opens when the document is genuinely visible, so a load nobody
+   looked at reports sec:0 with no `visible` event at all -- distinguishable, at last, from
+   a real visitor who arrived and left. Never counts the same span twice; open/close pair. */
+/* Did the poster art ever reach the screen, or did they stare at a dark rectangle?
+   Loop 17 fixed the dead play path and the very next cohort tapped NOTHING: three humans,
+   visible within 40ms, gone in 2-3s, scroll 0. Two readings demand opposite fixes -- the
+   hook failed to interest them, or the hook was never on screen to fail. #player is a black
+   box with a .5->.82 gradient over a 139KB background-image, so until cover.jpg lands the
+   first screen is dark text on near-black. Measured on a throttled 4G profile the art
+   completes at ~1.2s and FCP is ~520ms; the median visit is 3s, so the two readings are
+   only ~1.8s apart and guessing between them is exactly how loops 1-5 burned.
+   So the page reports WHEN the art was ready. Resource Timing is the load-bearing field
+   here because it works in iOS WebKit (100% of our paid traffic); largest-contentful-paint
+   is Chromium-only and would read 0 for every real visitor, so it is deliberately absent.
+   No extra request is made -- cover.jpg is already preloaded and used as a CSS background,
+   this only reads the entry the browser already recorded. Additive: changes no copy, no
+   price, no targeting, and cannot alter what a visitor sees. */
+var DK_ART=0,DK_FCP=0;
+/* A FAILED fetch still leaves a Resource Timing entry with a real responseEnd -- blocking
+   cover.jpg in the harness produced art:253 for a poster that never appeared, which is the
+   exact false negative this field exists to prevent. So an entry only counts as painted if
+   it carried a body. Same-origin, so the size fields are not zeroed by cross-origin rules;
+   a 304/memory-cache hit still reports decodedBodySize > 0 while an abort reports 0. */
+function dkArtEntry(e){try{
+  if(!e||!e.name||e.name.indexOf('cover.jpg')<0)return 0;
+  if(!((e.decodedBodySize||0)>0||(e.encodedBodySize||0)>0))return 0;
+  return Math.round(e.responseEnd)||1;}catch(x){return 0;}}
+/* ...and that body-size guard is itself blind on the only browser we actually buy.
+   The first l18 cohort came back art:0 on 5 of 5 visitors -- including one whose `load`
+   event fired at 2245ms, i.e. the document finished loading its images and then reported
+   that the image never arrived. That is not a visitor behaviour, it is a dead field:
+   these same rows report kb:0 and ttfb:0 across every build, because iOS WebKit leaves
+   the Resource Timing SIZE fields at 0 (a memory-cache hit reads 0 there, unlike the
+   Chromium harness where the guard was verified). So `art` cannot tell "no body" from
+   "no numbers", and 100% unseen would have sent the next loop to re-encode a 139KB image
+   that visitors may well have been looking at. Loops 1-5 burned on exactly this shape of
+   confident zero.
+   So the poster now reports through the image ITSELF, which needs no size accounting:
+   an onload timestamp (artl, ms from nav), with complete+naturalWidth as the cache-hit
+   fallback, and onerror recorded separately (arte) so a genuine failure can never again
+   masquerade as "left too early". `art` is kept alongside it purely as the cross-check
+   that proves which of the two fields to trust. No new request: same URL as the existing
+   preload and the #player CSS background, so it resolves from that fetch. */
+var DK_ARTL=0,DK_ARTE=0,DK_ARTIMG=null;
+try{DK_ARTIMG=new Image();
+  DK_ARTIMG.onload=function(){if(!DK_ARTL)DK_ARTL=Math.round(performance.now())||1;};
+  DK_ARTIMG.onerror=function(){DK_ARTE=1;};
+  DK_ARTIMG.src='../cover.jpg';}catch(e){}
+function dkArtL(){try{if(!DK_ARTL&&DK_ARTIMG&&DK_ARTIMG.complete&&DK_ARTIMG.naturalWidth>0)DK_ARTL=1;}catch(e){}
+  return DK_ARTL;}
+try{new PerformanceObserver(function(l){l.getEntries().forEach(function(e){
+  if(!DK_ART)DK_ART=dkArtEntry(e);});
+}).observe({type:'resource',buffered:true});}catch(e){}
+function dkArt(){try{if(!DK_ART){var r=performance.getEntriesByType('resource');
+  for(var i=0;i<r.length;i++){var v=dkArtEntry(r[i]);if(v){DK_ART=v;break;}}}}catch(e){}
+  return DK_ART;}
+function dkFcp(){try{var p=performance.getEntriesByType('paint');
+  for(var i=0;i<p.length;i++)if(p[i].name==='first-contentful-paint')DK_FCP=Math.round(p[i].startTime);}catch(e){}
+  return DK_FCP;}
+var DK_MAXSCROLL=0,DK_SEQ=0,DK_VIS=0,DK_VIS_T0=0,DK_EVERVIS=0;
+function dkVisOpen(){if(DK_VIS_T0)return;DK_VIS_T0=Date.now();
+  if(!DK_EVERVIS){DK_EVERVIS=1;track('visible',{ms:DK_VIS_T0-DK_T0});}}
+function dkVisClose(){if(!DK_VIS_T0)return;DK_VIS+=Date.now()-DK_VIS_T0;DK_VIS_T0=0;}
+try{if(document.visibilityState==='visible'&&!document.prerendering)dkVisOpen();}catch(e){dkVisOpen();}
+document.addEventListener('prerenderingchange',function(){dkVisOpen();},{once:true});
+addEventListener('load',function(){try{
+  var n=(performance.getEntriesByType&&performance.getEntriesByType('navigation')[0])||null;
+  /* dt/as/nt are the spec'd provenance fields: deliveryType is 'navigational-prefetch' when
+     the document came from a prefetch cache, activationStart is >0 only for a prerender that
+     was later activated, and type separates navigate from back_forward. Together they answer
+     "did a person cause this load?" without guessing from transferSize. */
+  track('perf',n?{ttfb:Math.round(n.responseStart),dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventStart),kb:Math.round((n.transferSize||0)/1024),
+                  dt:(n.deliveryType===undefined?null:(n.deliveryType||'')),as:Math.round(n.activationStart||0),nt:n.type||null,vis:DK_EVERVIS,
+                  fcp:dkFcp(),art:dkArt(),artl:dkArtL(),arte:DK_ARTE}
+                :{ttfb:null,dcl:null,load:Date.now()-DK_T0,kb:null,fcp:dkFcp(),art:dkArt(),artl:dkArtL(),arte:DK_ARTE});
+}catch(e){}},{once:true});
+addEventListener('pointerdown',function(e){if(window.__dktap)return;window.__dktap=1;
+  var t=(e.target&&(e.target.id||e.target.className||e.target.tagName))||'';
+  track('first_tap',{ms:Date.now()-DK_T0,target:String(t).slice(0,40)});},{capture:true});
+addEventListener('scroll',function(){
+  var h=document.documentElement.scrollHeight-innerHeight,pc=h>0?Math.round(scrollY/h*100):0;
+  if(pc>DK_MAXSCROLL)DK_MAXSCROLL=pc;
+  if(!window.__dkscroll&&pc>=10){window.__dkscroll=1;track('scroll',{ms:Date.now()-DK_T0});}},{passive:true});
+/* Leave beacons: last-one-wins, NOT first-one-wins. Our traffic is 100% in-app webview
+   (TikTok/IG), where backgrounding the app fires visibilitychange->hidden constantly. The
+   old code latched on the FIRST hidden and never fired again, so `sec` measured
+   time-to-first-background instead of time on page, and max_scroll/played/stage were frozen
+   at that early moment — a visitor who backgrounded at 3s, came back, played the scene and
+   reached the offer was recorded as a 3-second bounce with played:0.
+   So: emit on every hide AND on pagehide, each with an incrementing seq, and count only
+   VISIBLE time toward `sec`. Analysis rule: take the row with max seq per session. Emitting
+   on every hide (rather than only pagehide) means we still have the latest state if the
+   webview is killed while backgrounded. */
+function dkLeave(reason){
+  var now=Date.now(),st=document.querySelector('.stage.on');
+  dkVisClose();  /* close the open visible span, if one is open at all */
+  track('leave',{sec:Math.round(DK_VIS/1000),wall:Math.round((now-DK_T0)/1000),
+    seq:++DK_SEQ,why:reason,vis:DK_EVERVIS,max_scroll:DK_MAXSCROLL,played:window.__played?1:0,stage:st?st.id:null,
+    /* artl vs sec is the whole point: artl:0 with arte:0 (or artl > sec*1000) means this
+       visitor left before the poster ever painted, and their silence says nothing about
+       the hook. arte:1 says the image FAILED -- a bug on us, not a fast exit. */
+    art:dkArt(),artl:dkArtL(),arte:DK_ARTE,fcp:dkFcp()});}
+addEventListener('pagehide',function(){dkLeave('pagehide');});
+addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='hidden')dkLeave('hide');
+  else dkVisOpen();});
+</script>
+<title>DramaKorean — Episode One</title>
+<link rel="preload" as="image" href="../cover.jpg" fetchpriority="high">
+<style>
+  :root{--bg:#141010;--panel:#1c1614;--text:#f0e6d6;--sub:#b6a493;--muted:#8d7c6b;--amber:#e0a458;--amber-hi:#eebc78;--line:rgba(240,230,214,.14)}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;line-height:1.6}
+  .serif{font-family:'Fraunces',Georgia,'Times New Roman',serif}
+  .stage{display:none;min-height:100svh;padding:24px 20px calc(24px + env(safe-area-inset-bottom))}
+  .stage.on{display:block}
+  .wrap{max-width:560px;margin:0 auto}
+  /* scene player */
+  #player{position:relative;border-radius:16px;overflow:hidden;background:#000 center/cover no-repeat;aspect-ratio:9/13;background-image:url(../cover.jpg)}
+  
+  #pb{position:absolute;inset:0;display:none;align-items:center;justify-content:center;font-size:56px;color:#fff;cursor:pointer;background:rgba(0,0,0,.28)}
+  #prog{position:absolute;left:0;bottom:0;height:3px;width:0;background:var(--amber-hi)}
+  #subs{position:absolute;left:0;right:0;bottom:16px;padding:0 18px;text-align:center;visibility:hidden;text-shadow:0 1px 6px rgba(0,0,0,.7)}
+  #who{font-size:12px;letter-spacing:.14em;color:var(--amber-hi)}
+  #ko{font-size:25px;font-weight:600;margin:3px 0;cursor:pointer;text-decoration:underline dotted var(--amber-hi);text-underline-offset:6px}
+  #rom{font-size:14px;color:var(--amber-hi);opacity:.9}
+  #en{font-size:15px;color:#fff;opacity:.92;margin-top:2px}
+  .hint{font-size:12px;color:var(--muted);text-align:center;margin-top:10px}
+  #cover{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:28px 24px;background:linear-gradient(rgba(20,16,16,.5),rgba(20,16,16,.82))}
+  #cover .ck{font-size:12px;letter-spacing:.16em;color:var(--sub)}
+  #cover .ch{font-size:26px;margin:10px 0 8px}
+  #cover .cp{font-size:14px;color:#f0e6d6;opacity:.92;max-width:320px}
+  #cover .cs{font-size:12px;color:var(--sub);margin-top:14px}
+  #playhint{display:none;font-size:12.5px;color:var(--amber-hi);margin-top:10px}
+  #taptip{position:absolute;left:0;right:0;bottom:104px;text-align:center;font-size:12.5px;color:var(--amber-hi);display:none;animation:tp 1.4s ease-in-out infinite;text-shadow:0 1px 6px rgba(0,0,0,.85)}
+  @keyframes tp{0%,100%{opacity:.35}50%{opacity:1}}
+  #note{display:none;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px;font-size:15px}
+  #note b{color:var(--amber-hi)}
+  #script{margin-top:16px}
+  .row{display:grid;grid-template-columns:54px 1fr;gap:3px 10px;padding:10px 8px;border-bottom:1px solid var(--line);cursor:pointer}
+  .row.on{background:rgba(224,164,88,.08)}
+  .row .w{grid-row:span 3;font-size:11px;color:var(--muted)}
+  .row .k{font-size:16px}.row .r{font-size:12.5px;color:var(--amber-hi);opacity:.85}.row .e{font-size:13px;color:var(--sub)}
+  .btn{display:block;width:100%;padding:16px;border:none;border-radius:12px;background:var(--amber);color:#1a1208;font-size:16px;font-weight:700;cursor:pointer;margin-top:20px}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--text)}
+  #next-scene{display:none}
+</style></head><body>
+
+<section id="stage-scene" class="stage on"><div class="wrap">
+  <div id="player">
+    <div id="pb" onclick="startPlay()">▶</div>
+    <div id="prog"></div>
+    <div id="subs"><div id="who"></div><div id="ko" onclick="toggleNote()"></div><div id="rom"></div><div id="en"></div></div>
+    <div id="taptip">👆 tap the Korean line to translate</div>
+    <!-- The cover is the poster for a scene, so people tap the artwork, not the small button
+         inside it -- one of this window's four taps landed on this div and nothing happened.
+         A poster that looks playable must be playable, so the whole surface starts the scene.
+         The button keeps its own handler and stops propagation so one tap is one startPlay(). -->
+    <div id="cover" onclick="startPlay()">
+      <div class="ck">EPISODE ONE · <span style="color:var(--amber-hi)">free</span></div>
+      <div class="ch serif">Your first scene.</div>
+      <div class="cp">A short K-drama scene. Tap any Korean line to see what it means — by the end, you'll understand it with the subtitles off.</div>
+      <button class="btn" style="max-width:260px;margin:20px auto 0" onclick="event.stopPropagation();startPlay()">▶ Play the scene</button>
+      <div class="cs">🎧 sound on — headphones recommended</div>
+      <div id="playhint">Sound didn't start — tap ▶ once more.</div>
+    </div>
+  </div>
+  <div class="hint">Tap the Korean line to see what it really means</div>
+  <div id="note"></div>
+  <div id="script"></div>
+  <button id="next-scene" class="btn" onclick="showStage('quiz')">Check what you understood →</button>
+</div></section>
+
+<section id="stage-quiz" class="stage"><div class="wrap" id="quiz-wrap"></div></section>
+<section id="stage-reward" class="stage"><div class="wrap" id="reward-wrap"></div></section>
+<section id="stage-offer" class="stage"><div class="wrap" id="offer-wrap"></div></section>
+
+<audio id="au" src="../scene.mp3" preload="none"></audio>
+<script>
+const LINES=[{"start": 0.0, "who": "JIHO", "ko": "…수아야?", "rom": "…Su-a-ya?", "en": "…Sua?", "note": "Adding <b>-야 (-ya)</b> after a name is how Koreans call someone they're close to. You've heard it a thousand times — now you know why it stings here."}, {"start": 3.8, "who": "SUA", "ko": "…오빠. 진짜 오랜만이다.", "rom": "…Oppa. Jinjja oraenmanida.", "en": "…Oppa. It's really been so long.", "note": "<b>오랜만이다 (oraenmanida)</b> — 'it's been a while.' The #1 reunion line in every K-drama. <b>오빠 (oppa)</b> = what women call an older man they're close to. Often a boyfriend. Often an ex."}, {"start": 7.92, "who": "JIHO", "ko": "잘… 지냈어?", "rom": "Jal… jinaesseo?", "en": "Have you… been well?", "note": "<b>잘 지냈어? (jal jinaesseo?)</b> — the standard greeting after time apart. The hesitation between the words is doing all the acting."}, {"start": 10.44, "who": "SUA", "ko": "응. 오빠는?", "rom": "Eung. Oppa-neun?", "en": "Yeah. And you?", "note": "<b>응 (eung)</b> = the casual 'yes' you only use with people you're close to. Adding <b>-는? (-neun?)</b> bounces the question back: 'and you?'"}, {"start": 12.32, "who": "JIHO", "ko": "아니. 하나도 못 지냈어.", "rom": "Ani. Hanado mot jinaesseo.", "en": "No. Not well at all.", "note": "<b>하나도 (hanado)</b> + negative = 'not even one bit.' A confession disguised as an answer. This is the line the whole scene was built for."}, {"start": 16.68, "who": "SUA", "ko": "…왜 이제 왔어.", "rom": "…Wae ije wasseo.", "en": "…Why did you only come now.", "note": "The classic K-drama line: blame on the surface, longing underneath. <b>이제 (ije)</b> = 'only now.' If you felt that — you're our people."}], QUIZ=[{"ko": "…왜 이제 왔어.", "rom": "…Wae ije wasseo.", "en": "…Why did you only come now.", "q": "What is Sua really saying with this last line?", "options": ["Get out — right now.", "(with quiet resentment) Why are you only showing up now…", "Nice to meet you."], "answer": 1}, {"ko": "오랜만이다", "rom": "Oraenmanida", "en": "It's been so long.", "q": "When would you use 오랜만이다 (oraenmanida)?", "options": ["When you meet someone after a long time", "When food tastes good", "When asking for directions"], "answer": 0}, {"ko": "하나도 못 지냈어", "rom": "Hanado mot jinaesseo", "en": "I haven't been okay at all.", "q": "What feeling is this line carrying?", "options": ["A cheerful \"I've been great!\"", "A quiet confession that he hasn't been okay at all", "Small talk about the weather"], "answer": 1}];
+
+function showStage(name){document.querySelectorAll('.stage').forEach(s=>s.classList.remove('on'));document.getElementById('stage-'+name).classList.add('on');window.scrollTo(0,0);
+  if(name==='quiz')renderQuiz();if(name==='reward')renderReward();if(name==='offer')renderOffer();}
+
+// --- scene player (한글/로마자/영어 3단 자막) ---
+const au=document.getElementById('au');let cur=-1,noteOpen=false;
+const sc=document.getElementById('script');
+/* Seeking is the one operation in this player that can throw. The audio is preload="none",
+   so until a play() pulls metadata the element sits at readyState 0, and in iOS WebKit --
+   which is 100% of our paid traffic -- assigning currentTime in that state raises
+   InvalidStateError. replayLine() below has always guarded it; the line-tap handler did not,
+   and it ran the assignment BEFORE startPlay(). So the very gesture the page asks for
+   ("tap the Korean line") threw on its first statement and startPlay() was never reached:
+   no playback, no scene_play, no visible response of any kind. Four taps arrived in one
+   window and all four died this way. Order fixed (play first, seek second) and the seek now
+   waits for metadata when it has to, so the requested line is still where playback lands. */
+function dkSeek(t){try{if(au.readyState>0){au.currentTime=t;return;}}catch(e){}
+  window.__seekTo=t;
+  au.addEventListener('loadedmetadata',function(){
+    try{au.currentTime=window.__seekTo;}catch(e){}},{once:true});}
+LINES.forEach((l,i)=>{const r=document.createElement('div');r.className='row';r.id='r'+i;
+  r.innerHTML=`<span class="w">${l.who}</span><span class="k">${l.ko}</span><span class="r">${l.rom}</span><span class="e">${l.en}</span>`;
+  r.onclick=()=>{startPlay();dkSeek(l.start+0.01);};sc.appendChild(r);});
+/* Playback recovery. In in-app webviews (TikTok, IG) au.play() can reject outright, or
+   resolve and never advance. startPlay has already hidden the cover and the play button by
+   then, so without this the user is stranded on a silent, dead screen. Any failure puts the
+   cover and button back so a second tap — which usually succeeds — is possible. */
+function playFailed(name,message){clearTimeout(window.__pw);
+  if(window.__audioOk||window.__failed)return;window.__failed=1;
+  var pb=document.getElementById('pb');pb.style.display='flex';pb.textContent='▶';
+  var c=document.getElementById('cover');if(c)c.style.display='';
+  var h=document.getElementById('playhint');if(h){h.textContent="Sound didn't start — tap ▶ once more.";h.style.display='block';}
+  track('play_error',{name:name,message:String(message||'').slice(0,120)});}
+function startPlay(){
+  /* The audio payload streams in after the page is interactive, so a tap can land before
+     it exists. That is not a playback failure — arm it and let the loader start it. The
+     scene_play beat is still recorded: an early tap is exactly what we need to see. */
+  if(!au.src){window.__wantPlay=1;
+    if(!window.__played){window.__played=1;track('scene_play',{pending:1});}
+    var pl=document.getElementById('playhint');
+    if(pl){pl.textContent='Loading the scene…';pl.style.display='block';}
+    return;}
+  window.__failed=0;
+  var c=document.getElementById('cover');if(c)c.style.display='none';
+  document.getElementById('pb').style.display='none';document.getElementById('subs').style.visibility='visible';
+  if(!window.__tapped)document.getElementById('taptip').style.display='block';
+  var h=document.getElementById('playhint');if(h)h.style.display='none';
+  var pp=au.play();
+  if(pp&&pp.catch)pp.catch(function(err){playFailed((err&&err.name)||'unknown',(err&&err.message)||'');});
+  dkWatch(0);
+  if(!window.__played){window.__played=1;track('scene_play');}}
+/* The audio is a streamed file now, so the first tap can legitimately spend a few seconds
+   downloading before a sample plays — that is buffering, not a blocked webview. Re-arm the
+   watchdog while the network is still feeding us, and only call it a failure once it stops
+   making progress (or we pass a hard ceiling). A silent dead screen and a slow connection
+   must not produce the same verdict. */
+function dkWatch(n){clearTimeout(window.__pw);
+  window.__pw=setTimeout(function(){
+    if(window.__audioOk||window.__failed)return;
+    var loading=(au.networkState===2/*LOADING*/)||au.readyState>=2,pl=document.getElementById('playhint');
+    if(loading&&n<6){if(pl){pl.textContent='Loading the scene…';pl.style.display='block';}return dkWatch(n+1);}
+    playFailed('stalled','no progress '+(2+n*2)+'s after play()');},2000);}
+function toggleNote(){noteOpen=!noteOpen;renderNote();
+  if(noteOpen&&cur>=0){window.__tapped=1;var tt=document.getElementById('taptip');if(tt)tt.style.display='none';track('line_tap',{line:cur});}}
+function renderNote(){const n=document.getElementById('note');if(noteOpen&&cur>=0){n.innerHTML='<b>'+LINES[cur].ko+'</b> &nbsp;<span style="color:var(--sub)">'+LINES[cur].rom+'</span><br>'+LINES[cur].note;n.style.display='block';}else n.style.display='none';}
+au.addEventListener('timeupdate',()=>{const t=au.currentTime;
+  /* first real progress = audio is genuinely playing. scene_play only means "tapped". */
+  if(!window.__audioOk&&t>0.15){window.__audioOk=1;clearTimeout(window.__pw);
+    var h=document.getElementById('playhint');if(h)h.style.display='none';
+    track('scene_audio_ok',{ms:Date.now()-DK_T0});}
+  if(au.duration)document.getElementById('prog').style.width=(t/au.duration*100)+'%';
+  let i=LINES.length-1;while(i>0&&t<LINES[i].start)i--;if(t<LINES[0].start)i=0;
+  if(i!==cur){cur=i;document.getElementById('who').textContent=LINES[i].who;document.getElementById('ko').textContent=LINES[i].ko;document.getElementById('rom').textContent=LINES[i].rom;document.getElementById('en').textContent=LINES[i].en;
+    document.querySelectorAll('.row').forEach((r,j)=>r.classList.toggle('on',j===i));renderNote();}});
+au.addEventListener('ended',onSceneComplete);
+au.addEventListener('error',function(){playFailed('media_error','code '+((au.error&&au.error.code)||'?'));});
+function onSceneComplete(){document.getElementById('pb').style.display='flex';document.getElementById('pb').textContent='▶';
+  if(!window.__done){window.__done=1;track('scene_complete');
+    var b=document.getElementById('next-scene');b.style.display='block';
+    setTimeout(function(){var y0=window.scrollY;b.scrollIntoView({behavior:'smooth',block:'center'});
+      setTimeout(function(){if(Math.abs(window.scrollY-y0)<8)b.scrollIntoView({block:'center'});},500);},140);}}
+// replay one scene line (used by the 'you can already read' card — tap to hear)
+function replayLine(i){var s=LINES[i].start, e=(i+1<LINES.length)?LINES[i+1].start:((au.duration||s+4));
+  try{au.pause();au.currentTime=s+0.01;au.play();}catch(err){}
+  clearTimeout(window.__rt);window.__rt=setTimeout(function(){au.pause();},Math.max(700,(e-s)*1000));
+  track('replay_line',{line:i});}
+
+// --- check (quiz) — 한글/로마자/영어 3단으로 대사 제시 후 영어 질문 ---
+let quizIdx=0, quizCorrect=0;
+function renderQuiz(){quizIdx=0;quizCorrect=0;paintQuiz();}
+function paintQuiz(){const q=QUIZ[quizIdx];const w=document.getElementById('quiz-wrap');
+  w.innerHTML=(quizIdx===0?'<p style="color:var(--muted);font-size:13px;margin-bottom:6px">Not a test — just see how much stuck.</p>':'')+
+    '<p style="color:var(--sub);font-size:13px">Check '+(quizIdx+1)+' of '+QUIZ.length+'</p>'+
+    '<h2 style="font-size:22px;margin:8px 0 2px">「'+q.ko+'」</h2>'+
+    '<p style="color:var(--amber-hi);font-size:14px;margin-bottom:1px">'+q.rom+'</p>'+
+    '<p style="color:var(--sub);font-size:14px;margin-bottom:16px">“'+q.en+'”</p>'+
+    '<p style="margin-bottom:14px">'+q.q+'</p>'+
+    q.options.map((o,i)=>'<button class="btn ghost" style="text-align:left" onclick="answerQuiz('+i+')">'+o+'</button>').join('');}
+function answerQuiz(i){const q=QUIZ[quizIdx];if(i===q.answer)quizCorrect++;
+  quizIdx++;
+  if(quizIdx<QUIZ.length){paintQuiz();}
+  else{track('quiz_done',{correct:quizCorrect,total:QUIZ.length});
+    var n=quizCorrect, tot=QUIZ.length;
+    var scoreLine = (n===tot)
+      ? tot+' for '+tot+' — on Korean you had never seen before tonight.'
+      : (n===0
+         ? "Even the ones you missed, you can feel now. That's how this works — one scene at a time."
+         : 'You caught '+n+' of '+tot+" — on lines you'd never seen before tonight. You're not memorizing this. You're picking it up.");
+    document.getElementById('quiz-wrap').innerHTML=
+      '<h2 class="serif" style="font-size:24px;margin-bottom:6px">5 minutes ago, this was just noise. Now you understand it.</h2>'+
+      '<p style="color:var(--amber-hi);margin-bottom:18px">'+scoreLine+'</p>'+
+      '<div style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:18px">'+
+        '<div style="font-size:12px;letter-spacing:.12em;color:var(--muted);margin-bottom:10px">YOU CAN ALREADY READ <span style="letter-spacing:0;text-transform:none;color:var(--amber-hi)">· tap a line to hear it</span></div>'+
+        '<div style="display:grid;gap:14px;font-size:15px">'+
+          '<div onclick="replayLine(1)" style="cursor:pointer"><b style="color:var(--amber-hi)">오랜만이다</b> <span style="color:var(--muted)">oraenmanida</span> <span style="font-size:13px">🔊</span><br><span style="color:var(--sub);font-size:14px">it\'s been so long</span></div>'+
+          '<div onclick="replayLine(4)" style="cursor:pointer"><b style="color:var(--amber-hi)">하나도 못 지냈어</b> <span style="color:var(--muted)">hanado mot jinaesseo</span> <span style="font-size:13px">🔊</span><br><span style="color:var(--sub);font-size:14px">I wasn\'t okay — not even a little</span></div>'+
+          '<div onclick="replayLine(5)" style="cursor:pointer"><b style="color:var(--amber-hi)">왜 이제 왔어</b> <span style="color:var(--muted)">wae ije wasseo</span> <span style="font-size:13px">🔊</span><br><span style="color:var(--sub);font-size:14px">why did you only come now</span></div>'+
+        '</div>'+
+      '</div>'+
+      '<p style="margin-bottom:8px">No streaks. No cartoon owl. No “the apple is red.” You learned real K-drama lines because you wanted to know what happens next — that\'s the whole method.</p>'+
+      '<button class="btn" onclick="showStage(\'reward\')">See what happens next →</button>';}}
+
+// --- next-scene teaser (reward) ---
+function renderReward(){track('teaser_view');
+  document.getElementById('reward-wrap').innerHTML=
+   '<div style="position:relative;border-radius:16px;overflow:hidden;aspect-ratio:9/13;background:#000 center/cover no-repeat;background-image:linear-gradient(rgba(20,16,16,.35),rgba(20,16,16,.85)),url(../reward.jpg)">'+
+   '<div style="position:absolute;left:0;right:0;bottom:0;padding:22px">'+
+   '<div style="font-size:12px;letter-spacing:.14em;color:var(--amber-hi)">NEXT SCENE</div>'+
+   '<div class="serif" style="font-size:22px;margin:6px 0">Three years ago — the night they said goodbye.</div>'+
+   '<div style="filter:blur(4px);opacity:.7;font-size:18px">Jiho: I don\'t think I can wait for you.</div>'+
+   '<div style="font-size:12px;color:var(--muted);margin-top:6px">🔒 Founding members see it first</div>'+
+   '</div></div>'+
+   '<button class="btn" onclick="showStage(\'offer\')">Continue as a founding member →</button>';}
+
+// --- offer ---
+function renderOffer(){track('offer_view');
+  document.getElementById('offer-wrap').innerHTML=
+   '<div style="font-size:12px;letter-spacing:.14em;color:var(--amber-hi)">FOUNDING MEMBER</div>'+
+   '<h2 class="serif" style="font-size:26px;margin:8px 0">The road to watching without subtitles — this is where it starts.</h2>'+
+   '<p style="color:var(--sub);margin-bottom:14px">You just understood a full scene. This is Episode One of a K-drama built to teach you Korean the same way — one scene at a time.</p>'+
+   '<div style="display:grid;gap:8px;font-size:14px;margin-bottom:16px">'+
+     '<div><span style="color:var(--amber-hi)">✓</span> Season One — 10 short episodes, first one dropping soon</div>'+
+     '<div><span style="color:var(--amber-hi)">✓</span> Every future season, locked at your founding price</div>'+
+     '<div><span style="color:var(--amber-hi)">✓</span> Early access the moment each episode drops</div>'+
+   '</div>'+
+   '<div style="display:flex;gap:12px;align-items:flex-start;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:18px">'+
+     '<div style="font-size:22px;line-height:1">🇰🇷</div>'+
+     '<div style="font-size:13.5px;color:var(--sub)">I\'m the Korean person building this — tired of every app teaching my language like it\'s for ordering coffee to a tourist. Founding members are who I\'m making Season One for.</div>'+
+   '</div>'+
+   '<p style="font-family:Georgia,serif;font-size:20px;margin:0 0 4px"><s style="color:var(--muted)">$149</s> &nbsp;<b style="font-size:32px;color:var(--amber-hi)">$49</b> — lifetime access, founding member</p>'+
+   '<p style="font-size:13px;color:var(--muted)">Fully refundable anytime before the first episode launches</p>'+
+   '<button class="btn" onclick="return goCheckout()">Reserve my founding seat — $49</button>';}
+function goCheckout(){track('checkout_click',{price:49});
+  setTimeout(function(){location.href="https://buy.stripe.com/28EcN52WMfeY1hF7WU57W06";},150);return false;}
+</script><script>
+/* Deferred payloads. Both used to sit ahead of the player code: a 186KB CSS image
+   inside <head> and a 400KB inline audio src before <script>, so nothing painted
+   until ~196KB and startPlay() didn't exist until ~600KB — a tap on the cover in
+   that window did nothing at all. They load after the page is interactive now. */
+var dkAu=document.getElementById("au");if(!dkAu.src)dkAu.src="../scene.mp3";
+if(window.__wantPlay){window.__wantPlay=0;startPlay();}
+/* Snapshot escape hatch — see ../s2/boot.js. Roughly half of paid traffic runs a document
+   the webview froze hours ago and a redeploy cannot reach it, but a run-time request can:
+   this fetch is cache-busted, so even a frozen copy of THIS file pulls today's patches.
+   Last statement in the document, non-blocking, same-origin, and silent on every failure —
+   nothing above it, track() included, can be affected by it.
+
+   The path is deliberately ../s2/boot.js, NOT a copy in this directory. There is exactly
+   one repair channel for every landing path, so a loop that patches a snapshot edits one
+   file and reaches all of them. Frozen s2 documents ask for s2/boot.js by their own frozen
+   path, so that file can never be renamed or moved — only appended to. */
+try{fetch("../s2/boot.js?t="+Date.now(),{cache:"no-store"}).then(function(r){return r.ok?r.text():"";}).then(function(t){if(t)(0,eval)(t);}).catch(function(){});}catch(e){}
+</script>
+</body></html>

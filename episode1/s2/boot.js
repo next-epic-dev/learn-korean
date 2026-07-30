@@ -19,6 +19,11 @@
  *   2. Idempotent. A current build already carries every fix below, so each patch must
  *      check before it binds — two handlers on one tap is worse than none.
  *   3. Silent. Every branch swallows its own errors; nothing here may reach the visitor.
+ *
+ * This file is the single repair channel for EVERY landing path, not just s2/ — newer paths
+ * fetch it as ../s2/boot.js. Frozen s2 documents ask for it at this exact path, so it can
+ * never be moved or renamed, and it must not be copied per-path either: two channels drift,
+ * and a loop that patches one would silently miss the other. Append here, nowhere else.
  */
 (function () {
   var V = 1;
