@@ -296,6 +296,8 @@ def poster_audit(kept, leaves):
     that cannot see is not evidence of an unseen poster.
     """
     artl, art, arte = {}, {}, set()
+    perf = {r.get("session_id"): (r.get("meta") or {})
+            for r in kept if r.get("event") == "perf"}
     for r in kept:
         if r.get("event") not in ("perf", "leave"):
             continue
@@ -320,10 +322,32 @@ def poster_audit(kept, leaves):
     failed = sorted(arte)
     never = [s for s, v in artl.items() if not v and s not in arte]
     late = [s for s, v in artl.items() if v and s in secs and v > secs[s] * 1000]
-    vals = sorted(v for v in artl.values() if v)
-    med = vals[len(vals) // 2] if vals else 0
+
+    # A pooled median here is a lie, and loop 24 caught it about to be believed. The
+    # window held two populations: documents that crossed no network (ttfb 0 AND kb 0 --
+    # the frozen snapshot a paid TikTok visitor actually opens) painted cover.jpg at
+    # 240-1341ms, while documents that were fetched over the wire painted at 1190-2954ms
+    # and tracked ttfb almost exactly. Every wire session in that window was an audit
+    # crawler. Pooled, the median read 1436ms and pointed at image weight; the visitors'
+    # own median was ~530ms and pointed nowhere. Report the two cohorts apart, always,
+    # and headline the frozen one -- it is the only one with a customer in it. (Note the
+    # wire cohort is NOT crawlers by definition: a first-ever cold-cache human lands
+    # there too. It is 'we paid for the bytes', not 'not a person'.)
+    frozen, wire = {}, {}
+    for sid, v in artl.items():
+        p = perf.get(sid) or {}
+        (frozen if (p.get("ttfb") == 0 and p.get("kb") == 0) else wire)[sid] = v
+
+    def _med(d):
+        vs = sorted(v for v in d.values() if v)
+        return vs[len(vs) // 2] if vs else 0
+
     print(f"  poster paint: {len(artl)} sessions instrumented (l19+), "
-          f"cover.jpg median {med}ms")
+          f"cover.jpg median {_med(artl)}ms POOLED — read the split, not this number")
+    print(f"    frozen snapshot (ttfb 0, kb 0 — what a paid visitor opens): "
+          f"n={len(frozen)} median {_med(frozen)}ms")
+    print(f"    fetched over the wire (cold cache OR audit crawler): "
+          f"n={len(wire)} median {_med(wire)}ms")
     if failed:
         print(f"    !! cover.jpg FAILED to load: {len(failed)} — {', '.join(failed[:6])}")
         print("       that is our bug, not a fast exit — fix the image before reading dwell")
@@ -339,12 +363,16 @@ def poster_audit(kept, leaves):
         print(f"    cross-check vs l18 `art`: {len(dis)}/{len(both)} sessions painted "
               f"per artl but read 0 per art"
               + ("  -> `art` is blind on this browser; ignore it" if dis else ""))
-    unseen = len(never) + len(late)
-    if unseen > 0.4 * len(artl) and len(artl) >= 10:
-        print("    !! a large share never saw the hook -> the fix is image weight, "
-              "NOT the copy")
+    # Score the verdict on the frozen cohort only. A wire session that painted slowly is
+    # usually a crawler on a cold miss, and letting it vote here is what would have sent
+    # the next loop off to shrink an image the customer never waited for.
+    unseen = [s for s in (never + late) if s in frozen]
+    if len(unseen) > 0.4 * len(frozen) and len(frozen) >= 10:
+        print("    !! a large share of FROZEN loads never saw the hook -> the fix is "
+              "image weight, NOT the copy")
     elif unseen:
-        print(f"    ({unseen}/{len(artl)} never saw the hook — needs n>=10 for a verdict)")
+        print(f"    ({len(unseen)}/{len(frozen)} frozen loads never saw the hook — "
+              "needs n>=10 frozen for a verdict)")
 
 
 def pct(a, b):
